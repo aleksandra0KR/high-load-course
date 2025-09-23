@@ -34,7 +34,7 @@ class PaymentExternalSystemAdapterImpl(
     private val requestAverageProcessingTime = properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
-    private val slidingWindow = 10
+    private val slidingWindow = 1
 
     private val client = OkHttpClient.Builder().build()
 
