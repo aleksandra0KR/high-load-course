@@ -10,6 +10,10 @@ class PaymentMetrics(private val registry: MeterRegistry) {
 
     private val outgoingResponsesCounter = registry.counter("payments_outgoing_responses_total")
 
+    private val successCounter = Counter.builder("payments_completed_successful_requests_total")
+        .tag("outcome", "success")
+        .register(registry)
+
     fun markIncomingRequest() {
         incomingRequestsCounter.increment()
     }
@@ -19,9 +23,6 @@ class PaymentMetrics(private val registry: MeterRegistry) {
     }
 
     fun markSuccessfulRequest() {
-        Counter.builder("payments_completed_requests_total_successful")
-            .tag("outcome", "success")
-            .register(registry)
-            .increment()
+        successCounter.increment()
     }
 }
