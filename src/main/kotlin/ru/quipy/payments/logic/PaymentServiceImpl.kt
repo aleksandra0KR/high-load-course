@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
+import ru.quipy.payments.metrics.PaymentMetrics
 import java.time.Duration
 import java.util.*
 import java.util.concurrent.Executors
@@ -15,7 +16,8 @@ import kotlin.concurrent.withLock
 
 @Service
 class PaymentSystemImpl(
-    private val paymentAccounts: List<PaymentExternalSystemAdapter>
+    private val paymentAccounts: List<PaymentExternalSystemAdapter>,
+    private val paymentMetrics: PaymentMetrics
 ) : PaymentService {
     companion object {
         val logger = LoggerFactory.getLogger(PaymentSystemImpl::class.java)

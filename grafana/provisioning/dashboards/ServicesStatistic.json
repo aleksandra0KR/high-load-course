@@ -1943,6 +1943,118 @@
                 "mode": "palette-classic"
               },
               "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "showPoints": "auto"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 100 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+          "id": 101,
+          "options": {
+            "legend": {
+              "showLegend": true,
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "single"
+            }
+          },
+          "pluginVersion": "11.4.0",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "PBFA97CFB590B2093"
+              },
+              "editorMode": "code",
+              "expr": "rate(payments_incoming_requests_total[30s])",
+              "legendFormat": "Incoming Requests",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Incoming Requests per Second",
+          "type": "timeseries"
+        },
+        {
+          "id": 203,
+          "title": "Completed Requests per Second",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "rate(payments_completed_requests_total[30s])",
+              "legendFormat": "Completed",
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 2,
+                "showPoints": "auto"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "showLegend": true, "placement": "bottom" },
+            "tooltip": { "mode": "single" }
+          },
+          "pluginVersion": "11.4.0"
+        },
+        {
+          "id": 202,
+          "title": "Outgoing Responses per Second",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "rate(payments_outgoing_responses_total[30s])",
+              "legendFormat": "Outgoing",
+              "range": true
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "drawStyle": "line", "lineInterpolation": "linear", "lineWidth": 2 }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "showLegend": true, "placement": "bottom" },
+            "tooltip": { "mode": "single" }
+          }
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
                 "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
@@ -3517,3 +3629,6 @@
   "version": 4,
   "weekStart": ""
 }
+
+
+

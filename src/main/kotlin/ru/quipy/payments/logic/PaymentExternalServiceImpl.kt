@@ -6,21 +6,22 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Autowired
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
+import ru.quipy.payments.metrics.PaymentMetrics
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
 import java.util.concurrent.Semaphore
 
-
-// Advice: always treat time as a Duration
 class PaymentExternalSystemAdapterImpl(
     private val properties: PaymentAccountProperties,
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
+    private val paymentMetrics: PaymentMetrics
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -53,6 +54,8 @@ class PaymentExternalSystemAdapterImpl(
             it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
         }
 
+        paymentMetrics.markOutgoingResponse()
+
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
         try {
@@ -79,6 +82,8 @@ class PaymentExternalSystemAdapterImpl(
                 paymentESService.update(paymentId) {
                     it.logProcessing(body.result, now(), transactionId, reason = body.message)
                 }
+
+                paymentMetrics.markCompletedTask()
             }
         } catch (e: Exception) {
             when (e) {
@@ -87,6 +92,7 @@ class PaymentExternalSystemAdapterImpl(
                     paymentESService.update(paymentId) {
                         it.logProcessing(false, now(), transactionId, reason = "Request timeout.")
                     }
+                    paymentMetrics.markCompletedTask()
                 }
 
                 else -> {
@@ -95,6 +101,7 @@ class PaymentExternalSystemAdapterImpl(
                     paymentESService.update(paymentId) {
                         it.logProcessing(false, now(), transactionId, reason = e.message)
                     }
+                    paymentMetrics.markCompletedTask()
                 }
             }
         }finally {
