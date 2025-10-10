@@ -1978,7 +1978,7 @@
               },
               "editorMode": "code",
               "expr": "rate(payments_incoming_requests_total[30s])",
-              "legendFormat": "Incoming Requests",
+              "legendFormat": "{{instance}} - {{job}}",
               "range": true,
               "refId": "A"
             }
@@ -1996,7 +1996,7 @@
             {
               "refId": "A",
               "expr": "rate(payments_completed_requests_total[30s])",
-              "legendFormat": "Completed",
+              "legendFormat": "{{instance}} - {{job}}",
               "range": true
             }
           ],
@@ -2028,7 +2028,7 @@
             {
               "refId": "A",
               "expr": "rate(payments_outgoing_responses_total[30s])",
-              "legendFormat": "Outgoing",
+              "legendFormat": "{{instance}} - {{job}}",
               "range": true
             }
           ],
