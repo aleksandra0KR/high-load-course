@@ -1988,15 +1988,15 @@
         },
         {
           "id": 203,
-          "title": "Completed Requests per Second",
+          "title": "Success vs Fail Rate per Instance",
           "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
           "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
           "targets": [
             {
               "refId": "A",
-              "expr": "rate(payments_completed_requests_total[30s])",
-              "legendFormat": "{{instance}} - {{job}}",
+              "expr": "sum by(outcome, instance) (rate(payments_completed_requests_total[1m]))",
+              "legendFormat": "{{instance}} - {{outcome}}",
               "range": true
             }
           ],
