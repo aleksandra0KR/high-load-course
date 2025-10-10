@@ -1508,6 +1508,7 @@
         }
       ],
       "title": "(Clients -> Online shop) http requests processed rate (rps)",
+      "transparent": true,
       "type": "timeseries"
     },
     {
@@ -1647,6 +1648,7 @@
         }
       ],
       "title": "(Clients -> Online shop) http requests duration. Average",
+      "transparent": true,
       "type": "timeseries"
     },
     {
@@ -1719,8 +1721,8 @@
       "options": {
         "legend": {
           "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
+          "displayMode": "table",
+          "placement": "right",
           "showLegend": true
         },
         "tooltip": {
@@ -1739,6 +1741,7 @@
         }
       ],
       "title": "Successful Payments Per 30s",
+      "transparent": true,
       "type": "timeseries"
     },
     {
@@ -1811,8 +1814,8 @@
       "options": {
         "legend": {
           "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
+          "displayMode": "table",
+          "placement": "right",
           "showLegend": true
         },
         "tooltip": {
@@ -1836,6 +1839,7 @@
         }
       ],
       "title": "Incoming Payment Requests Per 30s",
+      "transparent": true,
       "type": "timeseries"
     },
     {
@@ -1975,6 +1979,7 @@
         }
       ],
       "title": "(Online shop -> Payment system)  http requests processed rate (rps)",
+      "transparent": true,
       "type": "timeseries"
     },
     {
@@ -2047,8 +2052,8 @@
       "options": {
         "legend": {
           "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
+          "displayMode": "table",
+          "placement": "right",
           "showLegend": true
         },
         "tooltip": {
@@ -2067,6 +2072,7 @@
         }
       ],
       "title": "Outgoing Responses per 30s",
+      "transparent": true,
       "type": "timeseries"
     },
     {
@@ -2229,6 +2235,7 @@
         }
       ],
       "title": "(Test system -> Online shop)  Average request latent time (before submit)",
+      "transparent": true,
       "type": "timeseries"
     },
     {
@@ -2368,6 +2375,7 @@
         }
       ],
       "title": "(Online shop -> Payment system)  Payment sys processing duration. Average",
+      "transparent": true,
       "type": "timeseries"
     },
     {
@@ -3774,5 +3782,5 @@
   "timezone": "",
   "title": "Services statistic",
   "uid": "KVr-Vmpnz",
-  "version": 26
+  "version": 31
 }
