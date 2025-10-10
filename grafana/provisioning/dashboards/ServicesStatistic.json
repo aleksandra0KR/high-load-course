@@ -1995,8 +1995,8 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "(increase(payments_completed_requests_total[1m]))",
-              "legendFormat": "{{instance}} - {{outcome}}",
+              "expr": "(increase(payments_completed_requests_total_successful_total[1m]))",
+              "legendFormat": "{{instance}}",
               "range": true
             }
           ],
