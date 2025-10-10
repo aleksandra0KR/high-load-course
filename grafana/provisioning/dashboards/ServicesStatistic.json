@@ -1977,7 +1977,7 @@
                 "uid": "PBFA97CFB590B2093"
               },
               "editorMode": "code",
-              "expr": "rate(payments_incoming_requests_total[30s])",
+              "expr": "increase(payments_incoming_requests_total[30s])",
               "legendFormat": "{{instance}} - {{job}}",
               "range": true,
               "refId": "A"
@@ -1988,14 +1988,14 @@
         },
         {
           "id": 203,
-          "title": "Success vs Fail Rate per Instance",
+          "title": "Successfully processed requests",
           "type": "timeseries",
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
           "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
           "targets": [
             {
               "refId": "A",
-              "expr": "sum by(outcome, instance) (rate(payments_completed_requests_total[1m]))",
+              "expr": "(increase(payments_completed_requests_total[1m]))",
               "legendFormat": "{{instance}} - {{outcome}}",
               "range": true
             }
@@ -2027,7 +2027,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "rate(payments_outgoing_responses_total[30s])",
+              "expr": "increase(payments_outgoing_responses_total[30s])",
               "legendFormat": "{{instance}} - {{job}}",
               "range": true
             }

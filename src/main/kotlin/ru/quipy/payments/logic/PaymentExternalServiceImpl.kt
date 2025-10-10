@@ -83,13 +83,14 @@ class PaymentExternalSystemAdapterImpl(
                     it.logProcessing(body.result, now(), transactionId, reason = body.message)
                 }
 
-                paymentMetrics.markCompletedRequest(body.result)
+                if (body.result) {
+                    paymentMetrics.markSuccessfulRequest()
+                }
             }
         } catch (e: Exception) {
             when (e) {
                 is SocketTimeoutException -> {
                     logger.error("[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId", e)
-                    paymentMetrics.markCompletedRequest(false)
                     paymentESService.update(paymentId) {
                         it.logProcessing(false, now(), transactionId, reason = "Request timeout.")
                     }
@@ -98,7 +99,6 @@ class PaymentExternalSystemAdapterImpl(
 
                 else -> {
                     logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
-                    paymentMetrics.markCompletedRequest(false)
                     paymentESService.update(paymentId) {
                         it.logProcessing(false, now(), transactionId, reason = e.message)
                     }
