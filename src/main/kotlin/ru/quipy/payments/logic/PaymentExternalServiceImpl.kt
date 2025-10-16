@@ -82,10 +82,6 @@ class PaymentExternalSystemAdapterImpl(
                 paymentESService.update(paymentId) {
                     it.logProcessing(body.result, now(), transactionId, reason = body.message)
                 }
-
-                if (body.result) {
-                    paymentMetrics.markSuccessfulRequest()
-                }
             }
         } catch (e: Exception) {
             when (e) {

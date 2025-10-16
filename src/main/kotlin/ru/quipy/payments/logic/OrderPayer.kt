@@ -41,7 +41,6 @@ class OrderPayer {
     )
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
-        paymentMetrics.markIncomingRequest()
 
         val createdAt = System.currentTimeMillis()
         paymentExecutor.submit {
