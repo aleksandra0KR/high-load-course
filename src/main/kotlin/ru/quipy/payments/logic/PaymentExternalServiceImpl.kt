@@ -7,6 +7,7 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
+import ru.quipy.common.utils.*
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
@@ -36,11 +37,16 @@ class PaymentExternalSystemAdapterImpl(
     private val requestAverageProcessingTime = properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
-    private val slidingWindow = 1
+    private val windowSec = 1
+    private val bucketSize = 300 // TODO
 
     private val client = OkHttpClient.Builder().build()
 
-    private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(slidingWindow.toLong()))
+    private var rateLimiter: LeakingBucketRateLimiter = LeakingBucketRateLimiter(
+        rateLimitPerSec.toLong(),
+        window = Duration.ofSeconds(windowSec.toLong()),
+        bucketSize,
+    )
     private val semaphore = Semaphore(parallelRequests)
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
@@ -60,7 +66,7 @@ class PaymentExternalSystemAdapterImpl(
 
         try {
             semaphore.acquire()
-            rateLimiter.tickBlocking()
+            rateLimiter.tick()
 
             val request = Request.Builder().run {
                 url("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")

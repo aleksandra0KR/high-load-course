@@ -72,7 +72,10 @@ class APIController {
         val paymentId = UUID.randomUUID()
 
         if (!rateLimiter.tick()) {
-            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).build()
+            return ResponseEntity
+                .status(HttpStatus.TOO_MANY_REQUESTS)
+                .header("Retry-After", "20")
+                .build()
         }
 
 
