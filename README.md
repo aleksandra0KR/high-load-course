@@ -1,3 +1,14 @@
+11 - http://localhost:3000/d/KVr-Vmpnz/services-statistic?orgId=1&from=2025-10-24T15:40:05.451Z&to=2025-10-24T15:45:02.425Z&timezone=browser&var-service=m3402-Random&refresh=5s
+
+<img width="1512" height="834" alt="Screenshot 2025-10-24 at 18 45 32" src="https://github.com/user-attachments/assets/f51573fa-6291-4b55-bd03-53e87a343f04" />
+
+<img width="1512" height="590" alt="Screenshot 2025-10-24 at 18 45 36" src="https://github.com/user-attachments/assets/5eb9bd32-ad03-4ef2-8f4a-22e921928889" />
+
+<img width="1511" height="829" alt="Screenshot 2025-10-24 at 18 45 40" src="https://github.com/user-attachments/assets/8906a2e1-ae48-4e49-8595-ec708dbccb6b" />
+
+10 - 
+
+
 # Template for the HighLoad course
 This project is based on [Tiny Event Sourcing library](https://github.com/andrsuh/tiny-event-sourcing)
 
