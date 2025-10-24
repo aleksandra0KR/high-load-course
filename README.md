@@ -6,7 +6,12 @@
 
 <img width="1511" height="829" alt="Screenshot 2025-10-24 at 18 45 40" src="https://github.com/user-attachments/assets/8906a2e1-ae48-4e49-8595-ec708dbccb6b" />
 
-10 - 
+10 - http://localhost:3000/d/KVr-Vmpnz/services-statistic?orgId=1&from=2025-10-24T15:46:58.002Z&to=2025-10-24T15:52:40.365Z&timezone=browser&var-service=$__all&refresh=5s
+
+<img width="1511" height="724" alt="Screenshot 2025-10-24 at 18 53 39" src="https://github.com/user-attachments/assets/e922d4e6-615c-47eb-95df-5dad91738161" />
+<img width="1512" height="536" alt="Screenshot 2025-10-24 at 18 53 43" src="https://github.com/user-attachments/assets/07adc7da-c8c4-4932-ab1d-a88e2596842b" />
+<img width="1512" height="779" alt="Screenshot 2025-10-24 at 18 53 47" src="https://github.com/user-attachments/assets/453c9c23-ac06-45ac-b9d5-b3387b898c0f" />
+
 
 
 # Template for the HighLoad course
