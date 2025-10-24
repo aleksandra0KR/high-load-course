@@ -3,11 +3,12 @@ POST http://localhost:1234/test/run
 Content-Type: application/json
 
 {
-  "serviceName": "{{serviceName}}",
-  "token": "{{token}}",
-  "ratePerSecond": 16,
-  "testCount": 1600,
-  "processingTimeMillis": 30000
+  "serviceName": "m3402-Random",
+  "token": "pCss8znPHRiNQ3A0qdAqWlF",
+  "ratePerSecond": 3,
+  "testCount": 1050,
+  "processingTimeMillis": 26000,
+  "runits": 90
 }
 
 ### Stop running test to save time and resources
