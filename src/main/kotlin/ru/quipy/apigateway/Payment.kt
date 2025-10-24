@@ -6,9 +6,7 @@ import org.springframework.stereotype.Service
 import ru.quipy.payments.logic.OrderPayer
 import ru.quipy.payments.metrics.PaymentMetrics
 import java.util.*
-import java.util.concurrent.Executors
-import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.*
 
 @Service
 class PaymentQueueProcessor(
@@ -20,22 +18,27 @@ class PaymentQueueProcessor(
 
     private val paymentQueue = LinkedBlockingQueue<PaymentTask>()
 
-    private val rpsIntervalMs = (1000.0 / 11.0).toLong()
+    private val maxRps = 11
+    private val rpsIntervalMs = (1000.0 / maxRps).toLong()
 
-    private val executor = Executors.newScheduledThreadPool(4)
+    private val scheduler = Executors.newSingleThreadScheduledExecutor()
+
+    private val workerPool = Executors.newFixedThreadPool(16)
 
     init {
-        logger.info("Starting PaymentQueueProcessor with ~11 RPS rate")
+        logger.info("Starting PaymentQueueProcessor with ~$maxRps RPS")
 
-        executor.scheduleAtFixedRate({
+        scheduler.scheduleAtFixedRate({
             val task = paymentQueue.poll()
             if (task != null) {
-                try {
-                    logger.info("Processing payment task ${task.paymentId} for order ${task.orderId}")
-                    orderPayer.processPayment(task.orderId, task.price, task.paymentId, task.deadline)
-                    paymentMetrics.markOutgoingResponse()
-                } catch (e: Exception) {
-                    logger.error("Failed to process payment ${task.paymentId}: ${e.message}", e)
+                workerPool.submit {
+                    try {
+                        logger.info("Processing payment task ${task.paymentId} for order ${task.orderId}")
+                        orderPayer.processPayment(task.orderId, task.price, task.paymentId, task.deadline)
+                        paymentMetrics.markOutgoingResponse()
+                    } catch (e: Exception) {
+                        logger.error("Failed to process payment ${task.paymentId}: ${e.message}", e)
+                    }
                 }
             }
         }, 0, rpsIntervalMs, TimeUnit.MILLISECONDS)
