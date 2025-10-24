@@ -7,11 +7,13 @@ import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import ru.quipy.common.utils.SlidingWindowRateLimiter
+import ru.quipy.common.utils.TokenBucketRateLimiter
 import ru.quipy.orders.repository.OrderRepository
 import ru.quipy.payments.logic.OrderPayer
 import ru.quipy.payments.metrics.PaymentMetrics
 import java.util.*
 import java.time.Duration
+import java.util.concurrent.TimeUnit
 
 @RestController
 class APIController {
@@ -59,9 +61,9 @@ class APIController {
         PAID,
     }
 
-    private val slidingWindow = 1
-    private val rateLimit = 11
-    private val rateLimiter = SlidingWindowRateLimiter(rateLimit.toLong(), Duration.ofSeconds(slidingWindow.toLong()))
+    private val window = 1
+    private val rateLimit = 15
+    private val rateLimiter = TokenBucketRateLimiter(rateLimit, 11, window.toLong(), TimeUnit.SECONDS)
 
     @Autowired
     private lateinit var paymentMetrics: PaymentMetrics

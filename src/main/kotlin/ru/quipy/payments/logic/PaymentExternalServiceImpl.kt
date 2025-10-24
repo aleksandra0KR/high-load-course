@@ -38,7 +38,7 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
     private val windowSec = 1
-    private val bucketSize = 300 // TODO
+    private val bucketSize = 300
 
     private val client = OkHttpClient.Builder().build()
 
