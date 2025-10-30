@@ -7,7 +7,7 @@ Content-Type: application/json
   "serviceName": "{{serviceName}}",
   "token": "{{token}}",
   "branch": "feat/lab-4",
-  "accounts": "acc-23",
+  "accounts": "acc-8",
   "ratePerSecond": 16,
   "testCount": 1600,
   "processingTimeMillis": 30000,
