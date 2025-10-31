@@ -34,13 +34,11 @@ class PaymentExternalSystemAdapterImpl(
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
-    private val rateLimitPerSec = properties.rateLimitPerSec
-    private val parallelRequests = properties.parallelRequests
-    private val slidingWindow = 1
 
     private val client = OkHttpClient.Builder().build()
 
-    private val retryAfterMillis: Long = 1.toLong()
+    private val baseRetryAfterMillis: Long = 100.toLong()
+    private val maxRetryDelay: Long = requestAverageProcessingTime.toMillis()
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
@@ -60,9 +58,9 @@ class PaymentExternalSystemAdapterImpl(
         var retryCount = 0
         val maxRetries = 5
         var success = false
-        val processingDeadline = paymentStartedAt + requestAverageProcessingTime.toMillis()
+        var currentRetryDelay = baseRetryAfterMillis
 
-        while (retryCount < maxRetries && !success && now() <= processingDeadline) {
+        while (retryCount < maxRetries && !success && now() <= deadline) {
             try {
 
                 val request = Request.Builder().run {
@@ -109,10 +107,11 @@ class PaymentExternalSystemAdapterImpl(
                 }
             }
 
-            if (!success && retryCount < maxRetries - 1 && now() <= processingDeadline) {
+            if (!success && retryCount < maxRetries - 1 && now() <= deadline) {
                 retryCount++
-                logger.warn("[$accountName] Retrying payment for txId: $transactionId, payment: $paymentId, attempt ${retryCount + 1}/$maxRetries")
-                Thread.sleep(retryAfterMillis)
+               // currentRetryDelay = minOf(currentRetryDelay + (requestAverageProcessingTime.toMillis() / 2), maxRetryDelay)
+                logger.warn("[$accountName] Retrying payment for txId: $transactionId, payment: $paymentId, attempt ${retryCount + 1}/$maxRetries after $currentRetryDelay ms")
+                Thread.sleep(currentRetryDelay)
             } else {
                 retryCount = maxRetries
             }
