@@ -33,12 +33,10 @@ class PaymentExternalSystemAdapterImpl(
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
-    private val requestAverageProcessingTime = properties.averageProcessingTime
 
     private val client = OkHttpClient.Builder().build()
 
     private val baseRetryAfterMillis: Long = 100.toLong()
-    private val maxRetryDelay: Long = requestAverageProcessingTime.toMillis()
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
@@ -56,7 +54,7 @@ class PaymentExternalSystemAdapterImpl(
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
         var retryCount = 0
-        val maxRetries = 5
+        val maxRetries = 3
         var success = false
         var currentRetryDelay = baseRetryAfterMillis
 
