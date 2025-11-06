@@ -6,6 +6,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import org.slf4j.LoggerFactory
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.MeterRegistry
 import org.springframework.beans.factory.annotation.Autowired
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
@@ -15,6 +17,7 @@ import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
 import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
 
 class PaymentExternalSystemAdapterImpl(
     private val properties: PaymentAccountProperties,
@@ -33,8 +36,10 @@ class PaymentExternalSystemAdapterImpl(
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
-    private val client = OkHttpClient.Builder().build()
-    private val baseRetryAfterMillis: Long = 100.toLong()
+    private val client = OkHttpClient.Builder()
+        .readTimeout(Duration.ofMillis(1800)) // TODO
+        .build()
+    private val baseRetryAfterMillis: Long = 300.toLong() // TODO
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
@@ -52,12 +57,13 @@ class PaymentExternalSystemAdapterImpl(
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
         var retryCount = 0
-        val maxRetries = 5
+        val maxRetries = 3 // TODO
         var success = false
         var currentRetryDelay = baseRetryAfterMillis
-
+        val requestStartTime = System.currentTimeMillis()
         while (retryCount < maxRetries && !success && now() <= deadline) {
             try {
+
 
                 val request = Request.Builder().run {
                     url("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
@@ -84,6 +90,15 @@ class PaymentExternalSystemAdapterImpl(
                         it.logProcessing(body.result, now(), transactionId, reason = body.message)
                     }
                 }
+            } catch (e: SocketTimeoutException) {
+                logger.error(
+                    "[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId, " +
+                            "retry: ${retryCount + 1}/$maxRetries",
+                    e
+                )
+                paymentESService.update(paymentId) {
+                    it.logProcessing(false, now(), transactionId, reason = "Request timeout after 10s")
+                }
             } catch (e: Exception) {
                 when (e) {
                     is SocketTimeoutException -> {
@@ -104,6 +119,7 @@ class PaymentExternalSystemAdapterImpl(
             }
 
             if (!success && retryCount < maxRetries - 1 && now() <= deadline) {
+                paymentMetrics.retryCounterIncrement()
                 retryCount++
                 logger.warn("[$accountName] Retrying payment for txId: $transactionId, payment: $paymentId, attempt ${retryCount + 1}/$maxRetries after $currentRetryDelay ms")
                 Thread.sleep(currentRetryDelay)
@@ -111,6 +127,8 @@ class PaymentExternalSystemAdapterImpl(
                 retryCount = maxRetries
             }
         }
+        val requestFinishTime = System.currentTimeMillis()
+        paymentMetrics.addRequestLatency(requestFinishTime, requestStartTime)
     }
 
 
