@@ -37,34 +37,30 @@ class PaymentExternalSystemAdapterImpl(
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
     private val client = OkHttpClient.Builder()
-        .readTimeout(Duration.ofMillis(1800)) // TODO
+        .readTimeout(Duration.ofMillis(1500))
         .build()
-    private val baseRetryAfterMillis: Long = 300.toLong() // TODO
+    private val baseRetryAfterMillis: Long = 200.toLong()
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
-
         val transactionId = UUID.randomUUID()
 
-        // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
-        // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
         paymentESService.update(paymentId) {
             it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
         }
-
         paymentMetrics.markOutgoingResponse()
-
-        logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
+        logger.info("[$accountName] Submit: $paymentId, txId: $transactionId")
 
         var retryCount = 0
-        val maxRetries = 3 // TODO
+        val maxRetries = 3
         var success = false
         var currentRetryDelay = baseRetryAfterMillis
-        val requestStartTime = System.currentTimeMillis()
+        var lastRequestStartTime = System.currentTimeMillis()
+
         while (retryCount < maxRetries && !success && now() <= deadline) {
+            lastRequestStartTime = System.currentTimeMillis()
+
             try {
-
-
                 val request = Request.Builder().run {
                     url("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
                     post(emptyBody)
@@ -92,29 +88,16 @@ class PaymentExternalSystemAdapterImpl(
                 }
             } catch (e: SocketTimeoutException) {
                 logger.error(
-                    "[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId, " +
-                            "retry: ${retryCount + 1}/$maxRetries",
+                    "[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId, retry: ${retryCount + 1}/$maxRetries",
                     e
                 )
                 paymentESService.update(paymentId) {
                     it.logProcessing(false, now(), transactionId, reason = "Request timeout after 10s")
                 }
             } catch (e: Exception) {
-                when (e) {
-                    is SocketTimeoutException -> {
-                        logger.error("[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId", e)
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(false, now(), transactionId, reason = "Request timeout.")
-                        }
-
-                    }
-
-                    else -> {
-                        logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(false, now(), transactionId, reason = e.message)
-                        }
-                    }
+                logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
+                paymentESService.update(paymentId) {
+                    it.logProcessing(false, now(), transactionId, reason = e.message)
                 }
             }
 
@@ -127,9 +110,11 @@ class PaymentExternalSystemAdapterImpl(
                 retryCount = maxRetries
             }
         }
-        val requestFinishTime = System.currentTimeMillis()
-        paymentMetrics.addRequestLatency(requestFinishTime, requestStartTime)
+
+        val lastRequestFinishTime = System.currentTimeMillis()
+        paymentMetrics.addRequestLatency(lastRequestFinishTime, lastRequestStartTime)
     }
+
 
 
     override fun price() = properties.price
