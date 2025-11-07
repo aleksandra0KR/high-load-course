@@ -52,7 +52,7 @@ class PaymentExternalSystemAdapterImpl(
         logger.info("[$accountName] Submit: $paymentId, txId: $transactionId")
 
         var retryCount = 0
-        val maxRetries = 3
+        val maxRetries = 2
         var success = false
         var currentRetryDelay = baseRetryAfterMillis
         var lastRequestStartTime = System.currentTimeMillis()
