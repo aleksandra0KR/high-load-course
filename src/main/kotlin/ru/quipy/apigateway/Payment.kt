@@ -18,12 +18,12 @@ class PaymentQueueProcessor(
 
     private val paymentQueue = LinkedBlockingQueue<PaymentTask>()
 
-    private val maxRps = 8
+    private val maxRps = 100
     private val rpsIntervalMs = (1000.0 / maxRps).toLong()
 
     private val scheduler = Executors.newSingleThreadScheduledExecutor()
 
-    private val workerPool = Executors.newFixedThreadPool(16)
+    private val workerPool = Executors.newFixedThreadPool(50)
 
     init {
         logger.info("Starting PaymentQueueProcessor with ~$maxRps RPS")
