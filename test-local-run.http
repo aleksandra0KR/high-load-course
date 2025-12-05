@@ -4,7 +4,7 @@ Content-Type: application/json
 
 {
   "serviceName": "m3402-Random",
-  "token": "pCss8znPHRiNQ3A0qdAqWlF",
+  "token": "",
   "accounts": "acc-12",
   "ratePerSecond": 1000,
   "testCount": 200000,

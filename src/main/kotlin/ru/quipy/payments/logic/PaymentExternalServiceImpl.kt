@@ -35,7 +35,7 @@ class PaymentExternalSystemAdapterImpl(
     private val requestAverageProcessingTime = properties.averageProcessingTime
 
     private val client = HttpClient.newBuilder()
-        .executor(Executors.newFixedThreadPool(120))
+        .executor(Executors.newFixedThreadPool(110))
         .connectTimeout((Duration.ofMillis(requestAverageProcessingTime.toMillis() * 2)))
         .version(HttpClient.Version.HTTP_2)
         .build()
