@@ -6,7 +6,6 @@ import org.slf4j.LoggerFactory
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.metrics.PaymentMetrics
-import ru.quipy.common.utils.SlidingWindowRateLimiter
 import java.net.URI
 import java.net.SocketTimeoutException
 import java.net.http.HttpClient
@@ -40,12 +39,7 @@ class PaymentExternalSystemAdapterImpl(
         .version(HttpClient.Version.HTTP_2)
         .build()
 
-    private val rateLimiter = SlidingWindowRateLimiter(
-        properties.rateLimitPerSec.toLong(),
-        Duration.ofSeconds(1)
-    )
 
-    private val semaphore = Semaphore(properties.parallelRequests)
     private val maxRetries = 3
     private val retryDelayMs = 150L
 
@@ -87,14 +81,13 @@ class PaymentExternalSystemAdapterImpl(
             paymentMetrics.retryCounterIncrement()
         }
 
-        rateLimiter.tickBlocking()
-        semaphore.acquire()
-
         val request = HttpRequest.newBuilder()
             .uri(
-                URI("http://$paymentProviderHostPort/external/process" +
-                        "?serviceName=$serviceName&token=$token&accountName=$accountName" +
-                        "&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
+                URI(
+                    "http://$paymentProviderHostPort/external/process" +
+                            "?serviceName=$serviceName&token=$token&accountName=$accountName" +
+                            "&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"
+                )
             )
             .POST(HttpRequest.BodyPublishers.noBody())
             .build()
@@ -122,49 +115,39 @@ class PaymentExternalSystemAdapterImpl(
                 }
 
                 if (!body.result) {
-                    scheduleRetry(paymentId, transactionId, amount, deadline, attempt)
+                    CompletableFuture.delayedExecutor(retryDelayMs, TimeUnit.MILLISECONDS)
+                        .execute {
+                            processAttempt(paymentId, transactionId, amount, deadline, attempt + 1)
+                        }
                 }
             }
             .exceptionally { e ->
-                handleException(e, paymentId, transactionId)
-                scheduleRetry(paymentId, transactionId, amount, deadline, attempt)
+                when (e.cause) {
+                    is SocketTimeoutException -> {
+                        logger.error(
+                            "[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId, retry: ${attempt + 1}/$maxRetries",
+                            e
+                        )
+                        paymentESService.update(paymentId) {
+                            it.logProcessing(false, now(), transactionId, reason = "Request timeout after 10s")
+                        }
+                    }
+
+                    else -> {
+                        logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
+                        paymentESService.update(paymentId) {
+                            it.logProcessing(false, now(), transactionId, e.message ?: "Unknown error")
+                        }
+                    }
+                }
+                CompletableFuture.delayedExecutor(retryDelayMs, TimeUnit.MILLISECONDS)
+                    .execute {
+                        processAttempt(paymentId, transactionId, amount, deadline, attempt + 1)
+                    }
             }
             .whenComplete { _, _ ->
-                semaphore.release()
                 paymentMetrics.addRequestLatency(now(), start)
             }
-    }
-
-
-    private fun scheduleRetry(
-        paymentId: UUID,
-        transactionId: UUID,
-        amount: Int,
-        deadline: Long,
-        attempt: Int
-    ) {
-        CompletableFuture.delayedExecutor(retryDelayMs, TimeUnit.MILLISECONDS)
-            .execute {
-                processAttempt(paymentId, transactionId, amount, deadline, attempt + 1)
-            }
-    }
-
-
-    private fun handleException(e: Throwable, paymentId: UUID, transactionId: UUID) {
-        when (e.cause) {
-            is SocketTimeoutException -> {
-                logger.error("[$accountName] Timeout txId=$transactionId", e)
-                paymentESService.update(paymentId) {
-                    it.logProcessing(false, now(), transactionId, "Timeout")
-                }
-            }
-            else -> {
-                logger.error("[$accountName] Error txId=$transactionId", e)
-                paymentESService.update(paymentId) {
-                    it.logProcessing(false, now(), transactionId, e.message ?: "Unknown error")
-                }
-            }
-        }
     }
 
 

@@ -23,7 +23,7 @@ class PaymentQueueProcessor(
 
     private val scheduler = Executors.newSingleThreadScheduledExecutor()
 
-    private val workerPool = Executors.newFixedThreadPool(120)
+    private val workerPool = Executors.newFixedThreadPool(110)
 
     init {
         logger.info("Starting PaymentQueueProcessor with ~$maxRps RPS")
