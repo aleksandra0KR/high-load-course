@@ -3,6 +3,7 @@ package ru.quipy.payments.logic
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import org.slf4j.LoggerFactory
+import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.metrics.PaymentMetrics
@@ -39,7 +40,12 @@ class PaymentExternalSystemAdapterImpl(
         .version(HttpClient.Version.HTTP_2)
         .build()
 
+    private val rateLimiter = SlidingWindowRateLimiter(
+        properties.rateLimitPerSec.toLong(),
+        Duration.ofSeconds(1)
+    )
 
+    private val semaphore = Semaphore(properties.parallelRequests)
     private val maxRetries = 3
     private val retryDelayMs = 150L
 
@@ -80,6 +86,9 @@ class PaymentExternalSystemAdapterImpl(
         if (attempt > 1) {
             paymentMetrics.retryCounterIncrement()
         }
+
+        rateLimiter.tickBlocking()
+        semaphore.acquire()
 
         val request = HttpRequest.newBuilder()
             .uri(
@@ -146,6 +155,7 @@ class PaymentExternalSystemAdapterImpl(
                     }
             }
             .whenComplete { _, _ ->
+                semaphore.release()
                 paymentMetrics.addRequestLatency(now(), start)
             }
     }
