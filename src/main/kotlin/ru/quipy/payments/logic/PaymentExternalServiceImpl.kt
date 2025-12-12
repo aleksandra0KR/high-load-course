@@ -105,6 +105,7 @@ class PaymentExternalSystemAdapterImpl(
 
         client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
             .thenApply { response ->
+                semaphore.release()
                 val body = try {
                     mapper.readValue(response.body(), ExternalSysResponse::class.java)
                 } catch (ex: Exception) {
@@ -119,8 +120,10 @@ class PaymentExternalSystemAdapterImpl(
 
                 logger.warn("[$accountName] Payment result: txId=$transactionId payment=$paymentId ok=${body.result} msg=${body.message}")
 
-                paymentESService.update(paymentId) {
-                    it.logProcessing(body.result, now(), transactionId, reason = body.message)
+                CompletableFuture.runAsync {
+                    paymentESService.update(paymentId) {
+                        it.logProcessing(body.result, now(), transactionId, reason = body.message)
+                    }
                 }
 
                 if (!body.result) {
@@ -131,21 +134,25 @@ class PaymentExternalSystemAdapterImpl(
                 }
             }
             .exceptionally { e ->
+                semaphore.release()
                 when (e.cause) {
                     is SocketTimeoutException -> {
                         logger.error(
                             "[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId, retry: ${attempt + 1}/$maxRetries",
                             e
                         )
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(false, now(), transactionId, reason = "Request timeout after 10s")
+                        CompletableFuture.runAsync {
+                            paymentESService.update(paymentId) {
+                                it.logProcessing(false, now(), transactionId, reason = "Request timeout after 10s")
+                            }
                         }
                     }
-
                     else -> {
                         logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(false, now(), transactionId, e.message ?: "Unknown error")
+                        CompletableFuture.runAsync {
+                            paymentESService.update(paymentId) {
+                                it.logProcessing(false, now(), transactionId, e.message ?: "Unknown error")
+                            }
                         }
                     }
                 }
@@ -155,7 +162,6 @@ class PaymentExternalSystemAdapterImpl(
                     }
             }
             .whenComplete { _, _ ->
-                semaphore.release()
                 paymentMetrics.addRequestLatency(now(), start)
             }
     }
