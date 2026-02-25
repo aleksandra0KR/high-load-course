@@ -92,7 +92,7 @@ class PaymentExternalSystemAdapterImpl(
                 )
             )
             .POST(HttpRequest.BodyPublishers.noBody())
-            .timeout(Duration.ofSeconds(5))
+            .timeout(Duration.ofSeconds(3))
             .build()
 
         val start = System.currentTimeMillis()
