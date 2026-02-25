@@ -2,6 +2,8 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.github.resilience4j.ratelimiter.RateLimiter
+import io.github.resilience4j.ratelimiter.RateLimiterConfig
 import org.slf4j.LoggerFactory
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
@@ -25,42 +27,40 @@ class PaymentExternalSystemAdapterImpl(
 ) : PaymentExternalSystemAdapter {
 
     companion object {
-        val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
         val mapper = ObjectMapper().registerKotlinModule()
     }
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
 
-    private val requestAverageProcessingTime = properties.averageProcessingTime
-
     private val client = HttpClient.newBuilder()
-        .executor(Executors.newFixedThreadPool(110))
-        .connectTimeout((Duration.ofMillis(requestAverageProcessingTime.toMillis() * 2)))
-        .version(HttpClient.Version.HTTP_2)
+        .connectTimeout(Duration.ofSeconds(3))
+        .version(HttpClient.Version.HTTP_1_1)
         .build()
 
-    private val rateLimiter = SlidingWindowRateLimiter(
-        properties.rateLimitPerSec.toLong(),
-        Duration.ofSeconds(1)
+    // 4000 RPS
+    private val rateLimiter = RateLimiter.of("rate-limiter", RateLimiterConfig.custom()
+        .limitForPeriod(4000)
+        .limitRefreshPeriod(Duration.ofMillis(1000))
+        .build()
     )
 
-    private val semaphore = Semaphore(properties.parallelRequests)
+    // 4000 активных запросов (1 сек processing time)
+    private val semaphore = Semaphore(8000)
+
     private val maxRetries = 3
-    private val retryDelayMs = 150L
+    private val retryDelayMs = 100L
 
-    override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+    override fun performPaymentAsync(
+        paymentId: UUID,
+        amount: Int,
+        paymentStartedAt: Long,
+        deadline: Long
+    ) {
         val transactionId = UUID.randomUUID()
-
-        paymentESService.update(paymentId) {
-            it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
-        }
-        paymentMetrics.markOutgoingResponse()
-        logger.info("[$accountName] Submit: $paymentId, txId: $transactionId")
 
         processAttempt(paymentId, transactionId, amount, deadline, 1)
     }
-
 
     private fun processAttempt(
         paymentId: UUID,
@@ -69,110 +69,74 @@ class PaymentExternalSystemAdapterImpl(
         deadline: Long,
         attempt: Int
     ) {
-        if (now() > deadline) {
-            paymentESService.update(paymentId) {
-                it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
-            }
+        if (System.currentTimeMillis() > deadline || attempt > maxRetries) {
             return
         }
 
-        if (attempt > maxRetries) {
-            paymentESService.update(paymentId) {
-                it.logProcessing(false, now(), transactionId, reason = "Out of retry time")
-            }
+        if (!rateLimiter.acquirePermission()) {
+            retry(paymentId, transactionId, amount, deadline, attempt)
+        }
+        if (!semaphore.tryAcquire()) {
+            retry(paymentId, transactionId, amount, deadline, attempt)
             return
         }
-
-        if (attempt > 1) {
-            paymentMetrics.retryCounterIncrement()
-        }
-
-        rateLimiter.tickBlocking()
-        semaphore.acquire()
-
         val request = HttpRequest.newBuilder()
             .uri(
                 URI(
                     "http://$paymentProviderHostPort/external/process" +
-                            "?serviceName=$serviceName&token=$token&accountName=$accountName" +
-                            "&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"
+                            "?serviceName=$serviceName&token=$token" +
+                            "&accountName=$accountName" +
+                            "&transactionId=$transactionId" +
+                            "&paymentId=$paymentId" +
+                            "&amount=$amount"
                 )
             )
             .POST(HttpRequest.BodyPublishers.noBody())
+            .timeout(Duration.ofSeconds(3))
             .build()
 
-        val start = now()
+        val start = System.currentTimeMillis()
 
         client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-            .thenApply { response ->
+            .whenComplete { response, error ->
+
                 semaphore.release()
+                paymentMetrics.addRequestLatency(System.currentTimeMillis(), start)
+
+                if (error != null) {
+                    retry(paymentId, transactionId, amount, deadline, attempt)
+                    return@whenComplete
+                }
+
                 val body = try {
                     mapper.readValue(response.body(), ExternalSysResponse::class.java)
                 } catch (ex: Exception) {
-                    logger.error("[$accountName] JSON parsing fail: ${response.body()}")
-                    ExternalSysResponse(
-                        transactionId.toString(),
-                        paymentId.toString(),
-                        false,
-                        ex.message
-                    )
-                }
-
-                logger.warn("[$accountName] Payment result: txId=$transactionId payment=$paymentId ok=${body.result} msg=${body.message}")
-
-                CompletableFuture.runAsync {
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(body.result, now(), transactionId, reason = body.message)
-                    }
+                    retry(paymentId, transactionId, amount, deadline, attempt)
+                    return@whenComplete
                 }
 
                 if (!body.result) {
-                    CompletableFuture.delayedExecutor(retryDelayMs, TimeUnit.MILLISECONDS)
-                        .execute {
-                            processAttempt(paymentId, transactionId, amount, deadline, attempt + 1)
-                        }
+                    retry(paymentId, transactionId, amount, deadline, attempt)
                 }
-            }
-            .exceptionally { e ->
-                semaphore.release()
-                when (e.cause) {
-                    is SocketTimeoutException -> {
-                        logger.error(
-                            "[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId, retry: ${attempt + 1}/$maxRetries",
-                            e
-                        )
-                        CompletableFuture.runAsync {
-                            paymentESService.update(paymentId) {
-                                it.logProcessing(false, now(), transactionId, reason = "Request timeout after 10s")
-                            }
-                        }
-                    }
-                    else -> {
-                        logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
-                        CompletableFuture.runAsync {
-                            paymentESService.update(paymentId) {
-                                it.logProcessing(false, now(), transactionId, e.message ?: "Unknown error")
-                            }
-                        }
-                    }
-                }
-                CompletableFuture.delayedExecutor(retryDelayMs, TimeUnit.MILLISECONDS)
-                    .execute {
-                        processAttempt(paymentId, transactionId, amount, deadline, attempt + 1)
-                    }
-            }
-            .whenComplete { _, _ ->
-                paymentMetrics.addRequestLatency(now(), start)
             }
     }
 
+    private fun retry(
+        paymentId: UUID,
+        transactionId: UUID,
+        amount: Int,
+        deadline: Long,
+        attempt: Int
+    ) {
+        CompletableFuture.delayedExecutor(retryDelayMs, TimeUnit.MILLISECONDS)
+            .execute {
+                processAttempt(paymentId, transactionId, amount, deadline, attempt + 1)
+            }
+    }
 
     override fun price() = properties.price
-
     override fun isEnabled() = properties.enabled
-
     override fun name() = properties.accountName
-
 }
 
 public fun now() = System.currentTimeMillis()
