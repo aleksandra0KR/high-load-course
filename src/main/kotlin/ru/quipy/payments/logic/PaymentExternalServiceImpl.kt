@@ -46,7 +46,7 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     // 4000 активных запросов (1 сек processing time)
-    private val semaphore = Semaphore(8000)
+    private val semaphore = Semaphore(4000)
 
     private val maxRetries = 3
     private val retryDelayMs = 100L
@@ -92,7 +92,7 @@ class PaymentExternalSystemAdapterImpl(
                 )
             )
             .POST(HttpRequest.BodyPublishers.noBody())
-            .timeout(Duration.ofSeconds(3))
+            .timeout(Duration.ofSeconds(5))
             .build()
 
         val start = System.currentTimeMillis()
