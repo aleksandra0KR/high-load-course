@@ -13,27 +13,17 @@ class PaymentQueueProcessor(
     @Autowired private val orderPayer: OrderPayer,
     @Autowired private val paymentMetrics: PaymentMetrics
 ) {
-
     private val logger = LoggerFactory.getLogger(PaymentQueueProcessor::class.java)
-
-    private val paymentQueue = LinkedBlockingQueue<PaymentTask>()
-
-    private val maxRps = 1000
-    private val rpsIntervalMs = (1000.0 / maxRps).toLong()
-
-    private val scheduler = Executors.newSingleThreadScheduledExecutor()
-
-    private val workerPool = Executors.newFixedThreadPool(110)
+    private val paymentQueue = LinkedBlockingQueue<PaymentTask>(1_000_000) // Увеличьте размер очереди
+    private val workerPool = Executors.newFixedThreadPool(1000) // Увеличьте пул потоков
 
     init {
-        logger.info("Starting PaymentQueueProcessor with ~$maxRps RPS")
-
-        scheduler.scheduleAtFixedRate({
-            val task = paymentQueue.poll()
-            if (task != null) {
-                workerPool.submit {
+        // Запустите несколько потоков-потребителей
+        repeat(100) {
+            workerPool.submit {
+                while (true) {
+                    val task = paymentQueue.take()
                     try {
-                        logger.info("Processing payment task ${task.paymentId} for order ${task.orderId}")
                         orderPayer.processPayment(task.orderId, task.price, task.paymentId, task.deadline)
                         paymentMetrics.markOutgoingResponse()
                     } catch (e: Exception) {
@@ -41,13 +31,12 @@ class PaymentQueueProcessor(
                     }
                 }
             }
-        }, 0, rpsIntervalMs, TimeUnit.MILLISECONDS)
+        }
     }
 
     fun submitPaymentTask(orderId: UUID, price: Int, paymentId: UUID, deadline: Long) {
-        val task = PaymentTask(orderId, price, paymentId, deadline)
-        paymentQueue.put(task)
-        logger.debug("Queued payment ${task.paymentId} for order ${task.orderId}. Queue size=${paymentQueue.size}")
+        orderPayer.processPayment(orderId, price, paymentId, deadline)
+        paymentMetrics.markOutgoingResponse()
     }
 
     data class PaymentTask(

@@ -35,8 +35,8 @@ class PaymentExternalSystemAdapterImpl(
     private val requestAverageProcessingTime = properties.averageProcessingTime
 
     private val client = HttpClient.newBuilder()
-        .executor(Executors.newFixedThreadPool(110))
-        .connectTimeout((Duration.ofMillis(requestAverageProcessingTime.toMillis() * 2)))
+        .executor(Executors.newFixedThreadPool(60))
+        .connectTimeout((Duration.ofSeconds(1)))
         .version(HttpClient.Version.HTTP_2)
         .build()
 
@@ -47,7 +47,7 @@ class PaymentExternalSystemAdapterImpl(
 
     private val semaphore = Semaphore(properties.parallelRequests)
     private val maxRetries = 3
-    private val retryDelayMs = 150L
+    private val retryDelayMs = 100L
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         val transactionId = UUID.randomUUID()
@@ -99,6 +99,7 @@ class PaymentExternalSystemAdapterImpl(
                 )
             )
             .POST(HttpRequest.BodyPublishers.noBody())
+            .timeout(Duration.ofSeconds(1))
             .build()
 
         val start = now()
