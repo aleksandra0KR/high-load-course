@@ -35,7 +35,7 @@ class OrderPayer {
         20,
         0L,
         TimeUnit.MILLISECONDS,
-        LinkedBlockingQueue<Runnable>(5000), // увеличенная очередь
+        LinkedBlockingQueue<Runnable>(10000), // увеличенная очередь
         NamedThreadFactory("payment-submission-executor"),
         ThreadPoolExecutor.CallerRunsPolicy()
     )

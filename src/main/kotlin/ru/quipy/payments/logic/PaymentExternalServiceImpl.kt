@@ -40,7 +40,7 @@ class PaymentExternalSystemAdapterImpl(
 
     // 4000 RPS
     private val rateLimiter = RateLimiter.of("rate-limiter", RateLimiterConfig.custom()
-        .limitForPeriod(1100)
+        .limitForPeriod(5000)
         .limitRefreshPeriod(Duration.ofMillis(1000))
         .build()
     )
@@ -92,7 +92,7 @@ class PaymentExternalSystemAdapterImpl(
                 )
             )
             .POST(HttpRequest.BodyPublishers.noBody())
-            .timeout(Duration.ofSeconds(5))
+            .timeout(Duration.ofSeconds(1))
             .build()
 
         val start = System.currentTimeMillis()
