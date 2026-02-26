@@ -34,7 +34,7 @@ class PaymentExternalSystemAdapterImpl(
     private val accountName = properties.accountName
 
     private val client = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(3))
+        .connectTimeout(Duration.ofSeconds(2))
         .version(HttpClient.Version.HTTP_1_1)
         .build()
 
@@ -46,7 +46,7 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     // 4000 активных запросов (1 сек processing time)
-    private val semaphore = Semaphore(4000)
+    private val semaphore = Semaphore(2000)
 
     private val maxRetries = 3
     private val retryDelayMs = 100L
