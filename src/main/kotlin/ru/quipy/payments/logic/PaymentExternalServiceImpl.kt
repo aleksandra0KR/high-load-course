@@ -70,16 +70,16 @@ class PaymentExternalSystemAdapterImpl(
         attempt: Int
     ) {
         if (now() > deadline) {
-            paymentESService.update(paymentId) {
-                it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
-            }
+         //   paymentESService.update(paymentId) {
+        //        it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
+        //    }
             return
         }
 
         if (attempt > maxRetries) {
-            paymentESService.update(paymentId) {
-                it.logProcessing(false, now(), transactionId, reason = "Out of retry time")
-            }
+        //    paymentESService.update(paymentId) {
+         //       it.logProcessing(false, now(), transactionId, reason = "Out of retry time")
+        //    }
             return
         }
 
@@ -121,11 +121,11 @@ class PaymentExternalSystemAdapterImpl(
 
                 logger.warn("[$accountName] Payment result: txId=$transactionId payment=$paymentId ok=${body.result} msg=${body.message}")
 
-                CompletableFuture.runAsync {
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(body.result, now(), transactionId, reason = body.message)
-                    }
-                }
+                //CompletableFuture.runAsync {
+                  //  paymentESService.update(paymentId) {
+                  //      it.logProcessing(body.result, now(), transactionId, reason = body.message)
+               //     }
+               // }
 
                 if (!body.result) {
                     CompletableFuture.delayedExecutor(retryDelayMs, TimeUnit.MILLISECONDS)
@@ -142,19 +142,19 @@ class PaymentExternalSystemAdapterImpl(
                             "[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId, retry: ${attempt + 1}/$maxRetries",
                             e
                         )
-                        CompletableFuture.runAsync {
-                            paymentESService.update(paymentId) {
-                                it.logProcessing(false, now(), transactionId, reason = "Request timeout after 10s")
-                            }
-                        }
+                    //    CompletableFuture.runAsync {
+                      //      paymentESService.update(paymentId) {
+                      //          it.logProcessing(false, now(), transactionId, reason = "Request timeout after 10s")
+                      //      }
+                    ///    }
                     }
                     else -> {
                         logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
-                        CompletableFuture.runAsync {
-                            paymentESService.update(paymentId) {
-                                it.logProcessing(false, now(), transactionId, e.message ?: "Unknown error")
-                            }
-                        }
+                      //  CompletableFuture.runAsync {
+                       //     paymentESService.update(paymentId) {
+                       //         it.logProcessing(false, now(), transactionId, e.message ?: "Unknown error")
+                       //     }
+                     //   }
                     }
                 }
                 CompletableFuture.delayedExecutor(retryDelayMs, TimeUnit.MILLISECONDS)
