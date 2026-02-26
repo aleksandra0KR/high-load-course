@@ -40,7 +40,7 @@ class PaymentExternalSystemAdapterImpl(
 
     // 4000 RPS
     private val rateLimiter = RateLimiter.of("rate-limiter", RateLimiterConfig.custom()
-        .limitForPeriod(5000)
+        .limitForPeriod(1100)
         .limitRefreshPeriod(Duration.ofMillis(1000))
         .build()
     )
