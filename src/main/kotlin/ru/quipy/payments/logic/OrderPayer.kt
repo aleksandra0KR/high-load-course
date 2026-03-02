@@ -1,5 +1,12 @@
 package ru.quipy.payments.logic
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
@@ -8,14 +15,15 @@ import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
-import ru.quipy.payments.metrics.PaymentMetrics
 import java.util.*
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
+data class www(val id: Long)
+
 @Service
-class OrderPayer {
+class OrderPayer(val dbScope: CoroutineScope) {
 
     companion object {
         val logger: Logger = LoggerFactory.getLogger(OrderPayer::class.java)
@@ -27,32 +35,33 @@ class OrderPayer {
     @Autowired
     private lateinit var paymentService: PaymentService
 
-    @Autowired
-    private lateinit var paymentMetrics: PaymentMetrics
-
     private val paymentExecutor = ThreadPoolExecutor(
-        40,
-        40,
-        3L,
-        TimeUnit.MILLISECONDS,
-        LinkedBlockingQueue<Runnable>(20_000), // увеличенная очередь
+        64,
+        64,
+        60L,
+        TimeUnit.SECONDS,
+        LinkedBlockingQueue(20_000),
         NamedThreadFactory("payment-submission-executor"),
-        ThreadPoolExecutor.CallerRunsPolicy()
+        ThreadPoolExecutor.DiscardOldestPolicy()
     )
+    val dispatcher = paymentExecutor.asCoroutineDispatcher()
+    private val scope = CoroutineScope(SupervisorJob() + dispatcher)
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
-
         val createdAt = System.currentTimeMillis()
-        paymentExecutor.submit {
-            val createdEvent = paymentESService.create {
-                it.create(
-                    paymentId,
-                    orderId,
-                    amount
-                )
-            }
-            logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
 
+        scope.launch {
+            dbScope.launch {
+                paymentESService.create {
+                    it.create(
+                        paymentId,
+                        orderId,
+                        amount
+                    )
+                }
+            }
+
+            logger.trace("Payment ${paymentId}  for order $orderId created.")
             paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
         }
         return createdAt

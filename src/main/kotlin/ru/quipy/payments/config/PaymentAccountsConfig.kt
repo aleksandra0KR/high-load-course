@@ -3,9 +3,14 @@ package ru.quipy.payments.config
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.logic.*
@@ -15,6 +20,9 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.util.*
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 
 @Configuration
@@ -22,7 +30,25 @@ class PaymentAccountsConfig {
     companion object {
         private val javaClient = HttpClient.newBuilder().build()
         private val mapper = ObjectMapper().registerKotlinModule().registerModules(JavaTimeModule())
+
+        private val dbExecutor =
+            ThreadPoolExecutor(
+                16,
+                16,
+                60L,
+                TimeUnit.SECONDS,
+                LinkedBlockingQueue(20_000),
+                NamedThreadFactory("payment-db-executor"),
+                ThreadPoolExecutor.DiscardOldestPolicy()
+            )
+
+        private val dbScope =
+            CoroutineScope(SupervisorJob() + Dispatchers.IO + dbExecutor.asCoroutineDispatcher())
     }
+
+
+    @Bean
+    fun dbScope() = dbScope
 
     @Value("\${payment.hostPort}")
     lateinit var paymentProviderHostPort: String
@@ -36,8 +62,14 @@ class PaymentAccountsConfig {
     @Value("#{'\${payment.accounts}'.split(',')}")
     lateinit var allowedAccounts: List<String>
 
+
+
+
     @Bean
-    fun accountAdapters(paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>, paymentMetrics: PaymentMetrics): List<PaymentExternalSystemAdapter> {
+    fun accountAdapters(
+        paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
+        paymentMetrics: PaymentMetrics
+    ): List<PaymentExternalSystemAdapter> {
         val request = HttpRequest.newBuilder()
             .uri(URI("http://${paymentProviderHostPort}/external/accounts?serviceName=$serviceName&token=$token"))
             .GET()
@@ -48,7 +80,10 @@ class PaymentAccountsConfig {
         println("\nPayment accounts list:")
         return mapper.readValue<List<PaymentAccountProperties>>(
             resp.body(),
-            mapper.typeFactory.constructCollectionType(List::class.java, PaymentAccountProperties::class.java)
+            mapper.typeFactory.constructCollectionType(
+                List::class.java,
+                PaymentAccountProperties::class.java
+            )
         )
             .filter { it.accountName in allowedAccounts }
             .map { it.copy(enabled = true) }
@@ -59,7 +94,8 @@ class PaymentAccountsConfig {
                     paymentService,
                     paymentProviderHostPort,
                     token,
-                    paymentMetrics
+                    paymentMetrics,
+                    dbScope,
                 )
             }
     }

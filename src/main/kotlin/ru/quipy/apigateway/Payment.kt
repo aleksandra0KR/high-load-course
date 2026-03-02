@@ -17,22 +17,6 @@ class PaymentQueueProcessor(
     private val paymentQueue = LinkedBlockingQueue<PaymentTask>(1_000_000) // Увеличьте размер очереди
     private val workerPool = Executors.newFixedThreadPool(1000) // Увеличьте пул потоков
 
-    init {
-        // Запустите несколько потоков-потребителей
-        repeat(100) {
-            workerPool.submit {
-                while (true) {
-                    val task = paymentQueue.take()
-                    try {
-                        orderPayer.processPayment(task.orderId, task.price, task.paymentId, task.deadline)
-                        paymentMetrics.markOutgoingResponse()
-                    } catch (e: Exception) {
-                        logger.error("Failed to process payment ${task.paymentId}: ${e.message}", e)
-                    }
-                }
-            }
-        }
-    }
 
     fun submitPaymentTask(orderId: UUID, price: Int, paymentId: UUID, deadline: Long) {
         orderPayer.processPayment(orderId, price, paymentId, deadline)
