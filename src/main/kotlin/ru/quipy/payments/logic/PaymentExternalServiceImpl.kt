@@ -2,21 +2,24 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.ktor.client.*
+import io.ktor.client.engine.java.Java
+import io.ktor.client.request.*
+import io.ktor.client.statement.*
 import kotlinx.coroutines.*
-import kotlinx.coroutines.future.await
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.slf4j.LoggerFactory
+import ru.quipy.common.utils.NonBlockingSlidingWindowRateLimiter
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.metrics.PaymentMetrics
+import java.net.SocketTimeoutException
 import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.time.Duration
 import java.util.*
+
 
 class PaymentExternalSystemAdapterImpl(
     private val properties: PaymentAccountProperties,
@@ -35,31 +38,36 @@ class PaymentExternalSystemAdapterImpl(
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
 
-    private val client = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(1))
-        .version(HttpClient.Version.HTTP_2)
-        .build()
-
-    private val rateLimiter = SlidingWindowRateLimiter(
-        properties.rateLimitPerSec.toLong(),
-        Duration.ofSeconds(1)
-    )
 
     private val semaphore = Semaphore(properties.parallelRequests)
+
+    private val client = HttpClient(Java) {
+        engine {
+            protocolVersion = java.net.http.HttpClient.Version.HTTP_2
+        }
+
+        expectSuccess = false
+
+        install(io.ktor.client.plugins.HttpTimeout) {
+            requestTimeoutMillis = 1000L
+        }
+    }
+
+    private val rateLimiter: NonBlockingSlidingWindowRateLimiter by lazy {
+        NonBlockingSlidingWindowRateLimiter(properties.rateLimitPerSec)
+    }
+
 
     private val maxRetries = 3
     private val retryDelayMs = 100L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    override suspend fun performPaymentAsync(
-        paymentId: UUID,
-        amount: Int,
-        paymentStartedAt: Long,
-        deadline: Long
-    ) {
+    override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+
         val transactionId = UUID.randomUUID()
 
+        val startedAt = now()
         dbScope.launch {
             while (true) {
                 try {
@@ -67,8 +75,8 @@ class PaymentExternalSystemAdapterImpl(
                         it.logSubmission(
                             success = true,
                             transactionId,
-                            now(),
-                            Duration.ofMillis(now() - paymentStartedAt)
+                            startedAt,
+                            Duration.ofMillis(startedAt - paymentStartedAt)
                         )
                     }
                     break
@@ -78,151 +86,82 @@ class PaymentExternalSystemAdapterImpl(
             }
         }
 
-        paymentMetrics.markOutgoingResponse()
-        logger.info("[$accountName] Submit: $paymentId, txId: $transactionId")
+        logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
-        processAttempt(paymentId, transactionId, amount, deadline, 1)
+        val result = send(paymentId, amount, transactionId, paymentStartedAt)
+
+        val processedAt = now()
+        dbScope.launch {
+            while (true) {
+                try {
+                    paymentESService.update(paymentId) {
+                        it.logProcessing(result.status, processedAt, transactionId, reason = result.message)
+                    }
+                    break
+                } catch (_: java.lang.IllegalArgumentException) {
+                    delay(10)
+                }
+            }
+        }
     }
 
-    private suspend fun processAttempt(
+    suspend fun send(
         paymentId: UUID,
-        transactionId: UUID,
         amount: Int,
-        deadline: Long,
-        attempt: Int
-    ) {
-        if (now() > deadline) {
-
-
-            dbScope.launch {
-                while (true) {
-                    try {
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(false, now(), transactionId, "Deadline exceeded")
-                        }
-                        break
-                    } catch (_: java.lang.IllegalArgumentException) {
-                        delay(10)
-                    }
-                }
+        transactionId: UUID,
+        paymentStartedAt: Long
+    ): Result {
+        try {
+            semaphore.acquire()
+            if (!rateLimiter.acquireSuspend(200L)) {
+                return Result(false, "Rate limit exceeded")
             }
 
 
+            val response =
+                client.post("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
 
-
-            return
-        }
-
-        if (attempt > maxRetries) {
-
-
-            dbScope.launch {
-                while (true) {
-                    try {
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(false, now(), transactionId, "Out of retry time")
-                        }
-                        break
-                    } catch (_: java.lang.IllegalArgumentException) {
-                        delay(10)
-                    }
-                }
-            }
-
-
-
-
-            return
-        }
-
-        if (attempt > 1) {
-            paymentMetrics.retryCounterIncrement()
-        }
-
-        rateLimiter.tickBlocking()
-
-        semaphore.withPermit {
-            val request = HttpRequest.newBuilder()
-                .uri(
-                    URI(
-                        "http://$paymentProviderHostPort/external/process" +
-                                "?serviceName=$serviceName&token=$token&accountName=$accountName" +
-                                "&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"
-                    )
-                )
-                .POST(HttpRequest.BodyPublishers.noBody())
-                .build()
-
-            val start = now()
-
-            try {
-                val response = client
-                    .sendAsync(request, HttpResponse.BodyHandlers.ofString())
-                    .await()
-
-                val body = try {
-                    mapper.readValue(response.body(), ExternalSysResponse::class.java)
-                } catch (ex: Exception) {
-                    logger.error("[$accountName] JSON parsing fail: ${response.body()}")
-                    ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, ex.message)
-                }
-
-                logger.warn("[$accountName] result tx=$transactionId ok=${body.result}")
-
-
-
-
-                dbScope.launch {
-                    while (true) {
-                        try {
-                            paymentESService.update(paymentId) {
-                                it.logProcessing(body.result, now(), transactionId, body.message)
-                            }
-                            break
-                        } catch (_: java.lang.IllegalArgumentException) {
-                            delay(10)
-                        }
-                    }
-                }
-
-                if (!body.result) {
-                    delay(retryDelayMs)
-                    processAttempt(paymentId, transactionId, amount, deadline, attempt + 1)
-                }
-
+            val body = try {
+                mapper.readValue(response.bodyAsText(), ExternalSysResponse::class.java)
             } catch (e: Exception) {
-                logger.error("[$accountName] error tx=$transactionId", e)
+                logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.status.value}, reason: ${response.bodyAsText()}")
+                ExternalSysResponse(
+                    transactionId.toString(),
+                    paymentId.toString(),
+                    false,
+                    e.message
+                )
+            }
 
-
-
-                dbScope.launch {
-                    while (true) {
-                        try {
-                            paymentESService.update(paymentId) {
-                                it.logProcessing(false, now(), transactionId, e.message ?: "Unknown error")
-                            }
-                            break
-                        } catch (_: java.lang.IllegalArgumentException) {
-                            delay(10)
-                        }
-                    }
+            logger.info("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}.")
+            return Result(true, body.message)
+        } catch (e: Exception) {
+            when (e) {
+                is SocketTimeoutException -> {
+                    logger.error(
+                        "[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId.",
+                        e
+                    )
                 }
 
-
-
-
-
-                delay(retryDelayMs)
-                processAttempt(paymentId, transactionId, amount, deadline, attempt + 1)
-            } finally {
-                paymentMetrics.addRequestLatency(now(), start)
+                else -> {
+                    logger.error(
+                        "[$accountName] Payment failed for txId: $transactionId, payment: $paymentId.",
+                        e
+                    )
+                }
             }
+            return Result(false, e.message)
+        } finally {
+            semaphore.release()
         }
     }
 
     override fun price() = properties.price
     override fun isEnabled() = properties.enabled
     override fun name() = properties.accountName
+    data class Result(val status: Boolean, val message: String?)
+
 }
 
 fun now() = System.currentTimeMillis()

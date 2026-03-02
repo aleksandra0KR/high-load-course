@@ -7,11 +7,15 @@ import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import ru.quipy.orders.repository.OrderRepository
+import ru.quipy.payments.logic.OrderPayer
 import ru.quipy.payments.metrics.PaymentMetrics
 import java.util.*
 
 @RestController
 class APIController {
+    @Autowired
+    private lateinit var orderPayer: OrderPayer
+
 
     val logger: Logger = LoggerFactory.getLogger(APIController::class.java)
 
@@ -60,19 +64,15 @@ class APIController {
 
     @PostMapping("/orders/{orderId}/payment")
     fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): ResponseEntity<PaymentSubmissionDto> {
-        paymentMetrics.markIncomingRequest()
-
+        val paymentId = UUID.randomUUID()
         val order = orderRepository.findById(orderId)?.let {
             orderRepository.save(it.copy(status = OrderStatus.PAYMENT_IN_PROGRESS))
             it
-        } ?: return ResponseEntity.status(HttpStatus.NOT_FOUND).build()
+        } ?: throw IllegalArgumentException("No such order $orderId")
 
-        val paymentId = UUID.randomUUID()
 
-        paymentQueueProcessor.submitPaymentTask(orderId, order.price, paymentId, deadline)
-        paymentMetrics.markSuccessfulRequest()
-
-        return ResponseEntity.ok(PaymentSubmissionDto(System.currentTimeMillis(), paymentId))
+        val createdAt = orderPayer.processPayment(orderId, order.price, paymentId, deadline)
+        return ResponseEntity.ok(PaymentSubmissionDto(createdAt, paymentId))
     }
 
     class PaymentSubmissionDto(
