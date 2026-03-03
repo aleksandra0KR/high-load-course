@@ -17,6 +17,7 @@ import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.metrics.PaymentMetrics
 import java.net.SocketTimeoutException
 import java.net.URI
+import java.net.http.HttpClient
 import java.time.Duration
 import java.util.*
 
@@ -41,25 +42,19 @@ class PaymentExternalSystemAdapterImpl(
 
     private val semaphore = Semaphore(properties.parallelRequests)
 
-    private val client = HttpClient(Java) {
-        engine {
-            protocolVersion = java.net.http.HttpClient.Version.HTTP_2
-        }
+    private val client = java.net.http.HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(1))
+        .version(HttpClient.Version.HTTP_2)
+        .build()
 
-        expectSuccess = false
-
-        install(io.ktor.client.plugins.HttpTimeout) {
-            requestTimeoutMillis = 1000L
-        }
-    }
-
-    private val rateLimiter: NonBlockingSlidingWindowRateLimiter by lazy {
-        NonBlockingSlidingWindowRateLimiter(properties.rateLimitPerSec)
-    }
+    private val rateLimiter = SlidingWindowRateLimiter(
+        properties.rateLimitPerSec.toLong(),
+        Duration.ofSeconds(1)
+    )
 
 
     private val maxRetries = 3
-    private val retryDelayMs = 100L
+    private val retryDelayMs = 1000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -110,51 +105,83 @@ class PaymentExternalSystemAdapterImpl(
         amount: Int,
         transactionId: UUID,
         paymentStartedAt: Long
-    ): Result {
-        try {
-            semaphore.acquire()
-            if (!rateLimiter.acquireSuspend(200L)) {
-                return Result(false, "Rate limit exceeded")
-            }
+    ): Result = withContext(Dispatchers.IO) {
 
+        repeat(maxRetries) { attempt ->
+            try {
+                semaphore.withPermit {
 
-            val response =
-                client.post("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
+                    if (!rateLimiter.tick()) {
+                        return@withContext Result(false, "Rate limit exceeded")
+                    }
 
-            val body = try {
-                mapper.readValue(response.bodyAsText(), ExternalSysResponse::class.java)
+                    val uri = URI.create(
+                        "http://$paymentProviderHostPort/external/process" +
+                                "?serviceName=$serviceName" +
+                                "&token=$token" +
+                                "&accountName=$accountName" +
+                                "&transactionId=$transactionId" +
+                                "&paymentId=$paymentId" +
+                                "&amount=$amount"
+                    )
+
+                    val request = java.net.http.HttpRequest.newBuilder()
+                        .uri(uri)
+                        .timeout(Duration.ofSeconds(2))
+                        .POST(java.net.http.HttpRequest.BodyPublishers.noBody())
+                        .build()
+
+                    val response = client.send(
+                        request,
+                        java.net.http.HttpResponse.BodyHandlers.ofString()
+                    )
+
+                    if (response.statusCode() !in 200..299) {
+                        logger.error(
+                            "[$accountName] HTTP error ${response.statusCode()} for txId: $transactionId"
+                        )
+                        return@withContext Result(false, "HTTP ${response.statusCode()}")
+                    }
+
+                    val body = try {
+                        mapper.readValue(response.body(), ExternalSysResponse::class.java)
+                    } catch (e: Exception) {
+                        logger.error(
+                            "[$accountName] Failed to parse response for txId: $transactionId",
+                            e
+                        )
+                        return@withContext Result(false, "Invalid response")
+                    }
+
+                    logger.info(
+                        "[$accountName] Payment processed for txId: $transactionId, succeeded: ${body.result}"
+                    )
+
+                    return@withContext Result(body.result, body.message)
+                }
             } catch (e: Exception) {
-                logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.status.value}, reason: ${response.bodyAsText()}")
-                ExternalSysResponse(
-                    transactionId.toString(),
-                    paymentId.toString(),
-                    false,
-                    e.message
-                )
-            }
 
-            logger.info("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}.")
-            return Result(true, body.message)
-        } catch (e: Exception) {
-            when (e) {
-                is SocketTimeoutException -> {
-                    logger.error(
-                        "[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId.",
+                val isLastAttempt = attempt == maxRetries - 1
+
+                when (e) {
+                    is SocketTimeoutException -> logger.error(
+                        "[$accountName] Timeout for txId: $transactionId (attempt ${attempt + 1})"
+                    )
+                    else -> logger.error(
+                        "[$accountName] Failed for txId: $transactionId (attempt ${attempt + 1})",
                         e
                     )
                 }
 
-                else -> {
-                    logger.error(
-                        "[$accountName] Payment failed for txId: $transactionId, payment: $paymentId.",
-                        e
-                    )
+                if (isLastAttempt) {
+                    return@withContext Result(false, e.message)
                 }
+
+                delay(retryDelayMs * (attempt + 1))
             }
-            return Result(false, e.message)
-        } finally {
-            semaphore.release()
         }
+
+        Result(false, "Unknown error")
     }
 
     override fun price() = properties.price
