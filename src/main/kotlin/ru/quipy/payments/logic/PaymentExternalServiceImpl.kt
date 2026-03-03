@@ -53,7 +53,7 @@ class PaymentExternalSystemAdapterImpl(
     )
 
 
-    private val maxRetries = 3
+    private val maxRetries = 2
     private val retryDelayMs = 1000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
