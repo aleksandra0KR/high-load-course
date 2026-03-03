@@ -20,6 +20,38 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.max
+import kotlin.math.min
+
+
+class AdaptiveTimeout(
+    private val initialRtt: Double,
+    private val maxTimeout: Double
+) {
+    private val smoothedRtt = AtomicReference(initialRtt)
+    private val rttVariance = AtomicReference(initialRtt / 2.0)
+    private val alpha = 0.125
+    private val beta = 0.25
+
+    fun record(observedRtt: Long) {
+        val rtt = observedRtt.toDouble()
+        val currentSmoothed = smoothedRtt.get()
+        val currentVariance = rttVariance.get()
+        val newSmoothed = (1 - alpha) * currentSmoothed + alpha * rtt
+        smoothedRtt.set(newSmoothed)
+
+        val newVariance = (1 - beta) * currentVariance + beta * kotlin.math.abs(rtt - newSmoothed)
+        rttVariance.set(newVariance)
+    }
+
+    fun timeout(): Long {
+        val smoothed = smoothedRtt.get()
+        val variance = rttVariance.get()
+        val calculatedTimeout = smoothed + 4 * variance
+        return min(calculatedTimeout, maxTimeout).toLong()
+    }
+}
 
 
 class PaymentExternalSystemAdapterImpl(
@@ -51,7 +83,10 @@ class PaymentExternalSystemAdapterImpl(
         properties.rateLimitPerSec.toLong(),
         Duration.ofSeconds(1)
     )
-
+    private val adaptiveTimeout = AdaptiveTimeout(
+        initialRtt = properties.averageProcessingTime.toMillis().toDouble() * 1.2,
+        maxTimeout = min(properties.averageProcessingTime.toMillis().toDouble() * 3.0, 5000.0)
+    )
 
     private val maxRetries = 2
     private val retryDelayMs = 100L
@@ -83,7 +118,7 @@ class PaymentExternalSystemAdapterImpl(
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
-        val result = send(paymentId, amount, transactionId, paymentStartedAt)
+        val result = send(paymentId, amount, transactionId, paymentStartedAt, deadline)
 
         val processedAt = now()
         dbScope.launch {
@@ -104,8 +139,11 @@ class PaymentExternalSystemAdapterImpl(
         paymentId: UUID,
         amount: Int,
         transactionId: UUID,
-        paymentStartedAt: Long
+        paymentStartedAt: Long,
+        deadline: Long
     ): Result = withContext(Dispatchers.IO) {
+
+        val requestStartTime = now()
 
         repeat(maxRetries) { attempt ->
             try {
@@ -114,6 +152,7 @@ class PaymentExternalSystemAdapterImpl(
                     if (!rateLimiter.tick()) {
                         return@withContext Result(false, "Rate limit exceeded")
                     }
+                    val dynamicTimeout = computeDynamicTimeout(deadline)
 
                     val uri = URI.create(
                         "http://$paymentProviderHostPort/external/process" +
@@ -127,14 +166,18 @@ class PaymentExternalSystemAdapterImpl(
 
                     val request = java.net.http.HttpRequest.newBuilder()
                         .uri(uri)
-                        .timeout(Duration.ofSeconds(2))
+                        .timeout(Duration.ofMillis(dynamicTimeout))
                         .POST(java.net.http.HttpRequest.BodyPublishers.noBody())
                         .build()
 
+                    val httpRequestStart = now()
                     val response = client.send(
                         request,
                         java.net.http.HttpResponse.BodyHandlers.ofString()
                     )
+                    val httpRequestEnd = now()
+                    val observedLatency = httpRequestEnd - httpRequestStart
+                    adaptiveTimeout.record(observedLatency)
 
                     if (response.statusCode() !in 200..299) {
                         logger.error(
@@ -164,9 +207,20 @@ class PaymentExternalSystemAdapterImpl(
                 val isLastAttempt = attempt == maxRetries - 1
 
                 when (e) {
-                    is SocketTimeoutException -> logger.error(
-                        "[$accountName] Timeout for txId: $transactionId (attempt ${attempt + 1})"
-                    )
+                    is SocketTimeoutException -> {
+                        logger.error(
+                            "[$accountName] Timeout for txId: $transactionId (attempt ${attempt + 1})"
+                        )
+                        val currentTimeout = computeDynamicTimeout(deadline)
+                        adaptiveTimeout.record(currentTimeout * 2)
+                    }
+                    is java.net.http.HttpTimeoutException -> {
+                        logger.error(
+                            "[$accountName] HTTP Timeout for txId: $transactionId (attempt ${attempt + 1})"
+                        )
+                        val currentTimeout = computeDynamicTimeout(deadline)
+                        adaptiveTimeout.record(currentTimeout * 2)
+                    }
                     else -> logger.error(
                         "[$accountName] Failed for txId: $transactionId (attempt ${attempt + 1})",
                         e
@@ -184,9 +238,17 @@ class PaymentExternalSystemAdapterImpl(
         Result(false, "Unknown error")
     }
 
+    private fun computeDynamicTimeout(deadline: Long): Long {
+        val adaptiveTimeoutValue = adaptiveTimeout.timeout()
+        val timeUntilDeadline = deadline - now()
+
+        return min(adaptiveTimeoutValue, max(timeUntilDeadline, 100L))
+    }
+
     override fun price() = properties.price
     override fun isEnabled() = properties.enabled
     override fun name() = properties.accountName
+
     data class Result(val status: Boolean, val message: String?)
 
 }
