@@ -20,6 +20,8 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.min
 
 
 class PaymentExternalSystemAdapterImpl(
@@ -39,11 +41,10 @@ class PaymentExternalSystemAdapterImpl(
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
 
-
     private val semaphore = Semaphore(properties.parallelRequests)
 
     private val client = java.net.http.HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(1))
+        .connectTimeout(Duration.ofSeconds(2))
         .version(HttpClient.Version.HTTP_2)
         .build()
 
@@ -51,12 +52,33 @@ class PaymentExternalSystemAdapterImpl(
         properties.rateLimitPerSec.toLong(),
         Duration.ofSeconds(1)
     )
-
+    private val startTime = System.currentTimeMillis()
+    private val warmupDurationMs = 3000L
+    private val requestCounter = AtomicInteger(0)
 
     private val maxRetries = 2
     private val retryDelayMs = 100L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private fun getAdaptiveTimeout(): Duration {
+        val elapsedMs = System.currentTimeMillis() - startTime
+        val processedRequests = requestCounter.get()
+
+        return when {
+            elapsedMs < warmupDurationMs || processedRequests < 100 -> {
+                Duration.ofSeconds(30)
+            }
+            processedRequests < 500 -> {
+                Duration.ofSeconds(25)
+            }
+            processedRequests < 1000 -> {
+                Duration.ofSeconds(20)
+            }
+            else -> {
+                Duration.ofSeconds(18)
+            }
+        }
+    }
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
 
@@ -98,6 +120,8 @@ class PaymentExternalSystemAdapterImpl(
                 }
             }
         }
+
+        requestCounter.incrementAndGet()
     }
 
     suspend fun send(
@@ -115,6 +139,8 @@ class PaymentExternalSystemAdapterImpl(
                         return@withContext Result(false, "Rate limit exceeded")
                     }
 
+                    val timeout = getAdaptiveTimeout()
+
                     val uri = URI.create(
                         "http://$paymentProviderHostPort/external/process" +
                                 "?serviceName=$serviceName" +
@@ -127,7 +153,7 @@ class PaymentExternalSystemAdapterImpl(
 
                     val request = java.net.http.HttpRequest.newBuilder()
                         .uri(uri)
-                        .timeout(Duration.ofSeconds(15))
+                        .timeout(timeout)
                         .POST(java.net.http.HttpRequest.BodyPublishers.noBody())
                         .build()
 
