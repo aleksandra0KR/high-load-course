@@ -49,7 +49,7 @@ class PaymentExternalSystemAdapterImpl(
 
     private val rateLimiter = SlidingWindowRateLimiter(
         properties.rateLimitPerSec.toLong(),
-        Duration.ofSeconds(1)
+        Duration.ofSeconds(2)
     )
 
 
@@ -127,7 +127,7 @@ class PaymentExternalSystemAdapterImpl(
 
                     val request = java.net.http.HttpRequest.newBuilder()
                         .uri(uri)
-                        .timeout(Duration.ofSeconds(10))
+                        .timeout(Duration.ofSeconds(2))
                         .POST(java.net.http.HttpRequest.BodyPublishers.noBody())
                         .build()
 
