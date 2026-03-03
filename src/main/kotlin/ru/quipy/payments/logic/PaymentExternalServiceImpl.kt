@@ -49,12 +49,12 @@ class PaymentExternalSystemAdapterImpl(
 
     private val rateLimiter = SlidingWindowRateLimiter(
         properties.rateLimitPerSec.toLong(),
-        Duration.ofSeconds(2)
+        Duration.ofMillis(1500L)
     )
 
 
     private val maxRetries = 2
-    private val retryDelayMs = 300L
+    private val retryDelayMs = 200L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
