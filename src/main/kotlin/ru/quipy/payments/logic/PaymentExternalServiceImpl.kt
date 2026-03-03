@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.ktor.client.*
 import io.ktor.client.engine.java.Java
-import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import kotlinx.coroutines.*
@@ -12,9 +11,12 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.slf4j.LoggerFactory
 import ru.quipy.common.utils.NonBlockingSlidingWindowRateLimiter
+import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.metrics.PaymentMetrics
+import java.net.SocketTimeoutException
+import java.net.URI
 import java.time.Duration
 import java.util.*
 
@@ -31,44 +33,62 @@ class PaymentExternalSystemAdapterImpl(
     companion object {
         private val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
         private val mapper = ObjectMapper().registerKotlinModule()
-        private const val REQUEST_TIMEOUT_MS = 10_000L
-        private const val DEADLINE_BUFFER_MS = 1_000L
-        private const val MAX_RETRIES = 3
     }
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
 
+
     private val semaphore = Semaphore(properties.parallelRequests)
-    private val rateLimiter = NonBlockingSlidingWindowRateLimiter(
-        properties.rateLimitPerSec,
-        Duration.ofSeconds(1)
-    )
-    private val httpClient = HttpClient(Java) {
-        install(HttpTimeout) {
-            requestTimeoutMillis = REQUEST_TIMEOUT_MS
-            connectTimeoutMillis = 2_000L
+
+    private val client = HttpClient(Java) {
+        engine {
+            protocolVersion = java.net.http.HttpClient.Version.HTTP_2
+        }
+
+        expectSuccess = false
+
+        install(io.ktor.client.plugins.HttpTimeout) {
+            requestTimeoutMillis = 1000L
         }
     }
 
-    override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
-        val transactionId = UUID.randomUUID()
-        val startedAt = now()
+    private val rateLimiter: NonBlockingSlidingWindowRateLimiter by lazy {
+        NonBlockingSlidingWindowRateLimiter(properties.rateLimitPerSec)
+    }
 
+
+    private val maxRetries = 3
+    private val retryDelayMs = 100L
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+
+        val transactionId = UUID.randomUUID()
+
+        val startedAt = now()
         dbScope.launch {
             while (true) {
                 try {
                     paymentESService.update(paymentId) {
-                        it.logSubmission(success = true, transactionId, startedAt, Duration.ofMillis(startedAt - paymentStartedAt))
+                        it.logSubmission(
+                            success = true,
+                            transactionId,
+                            startedAt,
+                            Duration.ofMillis(startedAt - paymentStartedAt)
+                        )
                     }
                     break
-                } catch (_: IllegalArgumentException) { delay(10) }
+                } catch (_: java.lang.IllegalArgumentException) {
+                    delay(10)
+                }
             }
         }
 
-        logger.info("[$accountName] Submit: $paymentId, txId: $transactionId")
+        logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
-        val result = send(paymentId, amount, transactionId, deadline)
+        val result = send(paymentId, amount, transactionId, paymentStartedAt)
 
         val processedAt = now()
         dbScope.launch {
@@ -78,53 +98,70 @@ class PaymentExternalSystemAdapterImpl(
                         it.logProcessing(result.status, processedAt, transactionId, reason = result.message)
                     }
                     break
-                } catch (_: IllegalArgumentException) { delay(10) }
+                } catch (_: java.lang.IllegalArgumentException) {
+                    delay(10)
+                }
             }
         }
     }
 
-    private suspend fun send(paymentId: UUID, amount: Int, transactionId: UUID, deadline: Long): Result {
-        repeat(MAX_RETRIES) { attempt ->
-            if (deadline - now() < REQUEST_TIMEOUT_MS + DEADLINE_BUFFER_MS) {
-                return Result(false, "Deadline exceeded")
-            }
-            if (!rateLimiter.acquireSuspend(50)) {
-                return@repeat
+    suspend fun send(
+        paymentId: UUID,
+        amount: Int,
+        transactionId: UUID,
+        paymentStartedAt: Long
+    ): Result {
+        try {
+            semaphore.acquire()
+            if (!rateLimiter.acquireSuspend(200L)) {
+                return Result(false, "Rate limit exceeded")
             }
 
-            try {
-                val response = semaphore.withPermit {
-                    httpClient.post(
-                        "http://$paymentProviderHostPort/external/process" +
-                                "?serviceName=$serviceName&token=$token&accountName=$accountName" +
-                                "&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"
+
+            val response =
+                client.post("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
+
+            val body = try {
+                mapper.readValue(response.bodyAsText(), ExternalSysResponse::class.java)
+            } catch (e: Exception) {
+                logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.status.value}, reason: ${response.bodyAsText()}")
+                ExternalSysResponse(
+                    transactionId.toString(),
+                    paymentId.toString(),
+                    false,
+                    e.message
+                )
+            }
+
+            logger.info("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}.")
+            return Result(true, body.message)
+        } catch (e: Exception) {
+            when (e) {
+                is SocketTimeoutException -> {
+                    logger.error(
+                        "[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId.",
+                        e
                     )
                 }
 
-                if (response.status.value !in 200..299) {
-                    return Result(false, "HTTP ${response.status.value}")
+                else -> {
+                    logger.error(
+                        "[$accountName] Payment failed for txId: $transactionId, payment: $paymentId.",
+                        e
+                    )
                 }
-
-                val body = mapper.readValue(response.bodyAsText(), ExternalSysResponse::class.java)
-                logger.info("[$accountName] Payment processed for txId: $transactionId, succeeded: ${body.result}")
-                return Result(body.result, body.message)
-
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.error("[$accountName] Attempt ${attempt + 1} failed for txId: $transactionId", e)
-                if (attempt < MAX_RETRIES - 1) delay(100L * (attempt + 1))
             }
+            return Result(false, e.message)
+        } finally {
+            semaphore.release()
         }
-
-        return Result(false, "All attempts failed")
     }
 
     override fun price() = properties.price
     override fun isEnabled() = properties.enabled
     override fun name() = properties.accountName
-
     data class Result(val status: Boolean, val message: String?)
+
 }
 
 fun now() = System.currentTimeMillis()
