@@ -54,7 +54,7 @@ class PaymentExternalSystemAdapterImpl(
 
 
     private val maxRetries = 2
-    private val retryDelayMs = 1000L
+    private val retryDelayMs = 300L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -127,7 +127,7 @@ class PaymentExternalSystemAdapterImpl(
 
                     val request = java.net.http.HttpRequest.newBuilder()
                         .uri(uri)
-                        .timeout(Duration.ofSeconds(2))
+                        .timeout(Duration.ofSeconds(10))
                         .POST(java.net.http.HttpRequest.BodyPublishers.noBody())
                         .build()
 
