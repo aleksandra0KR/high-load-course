@@ -7,9 +7,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -23,7 +20,6 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.util.*
-import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -46,8 +42,13 @@ class PaymentAccountsConfig {
                 ThreadPoolExecutor.DiscardOldestPolicy()
             )
 
-        private val dbScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + dbExecutor.asCoroutineDispatcher())
+        private val dbScope =
+            CoroutineScope(SupervisorJob() + Dispatchers.IO + dbExecutor.asCoroutineDispatcher())
     }
+
+
+    @Bean
+    fun dbScope() = dbScope
 
     @Value("\${payment.hostPort}")
     lateinit var paymentProviderHostPort: String
@@ -61,8 +62,8 @@ class PaymentAccountsConfig {
     @Value("#{'\${payment.accounts}'.split(',')}")
     lateinit var allowedAccounts: List<String>
 
-    @Bean
-    fun dbScope() = dbScope
+
+
 
     @Bean
     fun accountAdapters(

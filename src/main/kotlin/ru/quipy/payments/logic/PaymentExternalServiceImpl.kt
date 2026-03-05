@@ -10,7 +10,6 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.slf4j.LoggerFactory
-import ru.quipy.common.utils.NonBlockingSlidingWindowRateLimiter
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
@@ -39,10 +38,7 @@ class PaymentExternalSystemAdapterImpl(
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
 
-
-    private val semaphore = Semaphore(properties.parallelRequests)
-
-    private val client = java.net.http.HttpClient.newBuilder()
+    private val client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(1))
         .version(HttpClient.Version.HTTP_2)
         .build()
@@ -52,6 +48,7 @@ class PaymentExternalSystemAdapterImpl(
         Duration.ofSeconds(1)
     )
 
+    private val semaphore = Semaphore(properties.parallelRequests)
 
     private val maxRetries = 2
     private val retryDelayMs = 100L
@@ -191,4 +188,4 @@ class PaymentExternalSystemAdapterImpl(
 
 }
 
-fun now() = System.currentTimeMillis()
+public fun now() = System.currentTimeMillis()
