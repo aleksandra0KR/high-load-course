@@ -13,10 +13,6 @@ class PaymentQueueProcessor(
     @Autowired private val orderPayer: OrderPayer,
     @Autowired private val paymentMetrics: PaymentMetrics
 ) {
-    private val logger = LoggerFactory.getLogger(PaymentQueueProcessor::class.java)
-    private val paymentQueue = LinkedBlockingQueue<PaymentTask>(1_000_000) // Увеличьте размер очереди
-    private val workerPool = Executors.newFixedThreadPool(1000) // Увеличьте пул потоков
-
 
     fun submitPaymentTask(orderId: UUID, price: Int, paymentId: UUID, deadline: Long) {
         orderPayer.processPayment(orderId, price, paymentId, deadline)
