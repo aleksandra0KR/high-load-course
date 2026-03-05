@@ -33,8 +33,8 @@ class PaymentAccountsConfig {
 
         private val dbExecutor =
             ThreadPoolExecutor(
-                16,
-                16,
+                120,
+                120,
                 60L,
                 TimeUnit.SECONDS,
                 LinkedBlockingQueue(20_000),
