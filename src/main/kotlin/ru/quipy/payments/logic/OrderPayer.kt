@@ -36,11 +36,11 @@ class OrderPayer(val dbScope: CoroutineScope) {
     private lateinit var paymentService: PaymentService
 
     private val paymentExecutor = ThreadPoolExecutor(
-        20,
-        20,
-        3L,
+        120,
+        120,
+        60L,
         TimeUnit.SECONDS,
-        LinkedBlockingQueue(20_000),
+        LinkedBlockingQueue(30_000),
         NamedThreadFactory("payment-submission-executor"),
         ThreadPoolExecutor.DiscardOldestPolicy()
     )
