@@ -49,6 +49,7 @@ class PaymentExternalSystemAdapterImpl(
     private val maxRetries = 2
     private val retryDelayMs = 10
 
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
@@ -180,8 +181,6 @@ class PaymentExternalSystemAdapterImpl(
     override fun price() = properties.price
     override fun isEnabled() = properties.enabled
     override fun name() = properties.accountName
-    data class Result(val status: Boolean, val message: String?)
-
 }
 
 public fun now() = System.currentTimeMillis()
