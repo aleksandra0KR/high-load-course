@@ -2,10 +2,6 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
-import io.ktor.client.*
-import io.ktor.client.engine.java.Java
-import io.ktor.client.request.*
-import io.ktor.client.statement.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -20,9 +16,6 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.time.Duration
 import java.util.*
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.TimeUnit
-
 
 class PaymentExternalSystemAdapterImpl(
     private val properties: PaymentAccountProperties,
@@ -54,7 +47,7 @@ class PaymentExternalSystemAdapterImpl(
     private val semaphore = Semaphore(properties.parallelRequests)
 
     private val maxRetries = 2
-    private val retryDelayMs = 100L
+    private val retryDelayMs = 10
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -90,7 +83,7 @@ class PaymentExternalSystemAdapterImpl(
             while (true) {
                 try {
                     paymentESService.update(paymentId) {
-                        it.logProcessing(result.status, processedAt, transactionId, reason = result.message)
+                        it.logProcessing(result, processedAt, transactionId)
                     }
                     break
                 } catch (_: java.lang.IllegalArgumentException) {
@@ -106,19 +99,19 @@ class PaymentExternalSystemAdapterImpl(
         amount: Int,
         deadline: Long,
         attempt: Int
-    ): Result = withContext(Dispatchers.IO) {
+    ): Boolean {
         repeat(maxRetries) { attempt ->
             if (now() > deadline) {
                 paymentESService.update(paymentId) {
                     it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
                 }
-                return@withContext Result(false, "Timeout")
+                return false
             }
             try {
                 semaphore.withPermit {
 
                     if (!rateLimiter.tick()) {
-                        return@withContext Result(false, "Rate limit exceeded")
+                        return false
                     }
 
                     val request = java.net.http.HttpRequest.newBuilder()
@@ -130,7 +123,7 @@ class PaymentExternalSystemAdapterImpl(
                             )
                         )
                         .POST(HttpRequest.BodyPublishers.noBody())
-                      //  .timeout()
+                        .timeout(Duration.ofSeconds(1))
                         .build()
 
                     val response = client.send(
@@ -138,13 +131,6 @@ class PaymentExternalSystemAdapterImpl(
                         java.net.http.HttpResponse.BodyHandlers.ofString()
                     )
 
-                 /*if (response.statusCode() !in 200..299) {
-                        logger.error(
-                            "[$accountName] HTTP error ${response.statusCode()} for txId: $transactionId"
-                        )
-                        return@withContext Result(false, "HTTP ${response.statusCode()}")
-                    }
-*/
                     val body = try {
                         mapper.readValue(response.body(), ExternalSysResponse::class.java)
                     } catch (e: Exception) {
@@ -152,22 +138,22 @@ class PaymentExternalSystemAdapterImpl(
                             "[$accountName] Failed to parse response for txId: $transactionId",
                             e
                         )
-                        return@withContext Result(false, "Invalid response")
+                        return false
                     }
 
                     if (!body.result) {
                         if (attempt == maxRetries - 1) {
-                            return@withContext Result(false, "Failed to pay")
+                            return false
                         }
 
-                        delay(retryDelayMs * (attempt + 1))
+                        delay(10)
 
                     } else {
                         logger.info(
                             "[$accountName] Payment processed for txId: $transactionId, succeeded: ${body.result}"
                         )
 
-                        return@withContext Result(true, body.message)
+                        return true
                     }
 
                 }
@@ -181,14 +167,14 @@ class PaymentExternalSystemAdapterImpl(
                 }
 
                 if (attempt == maxRetries - 1) {
-                    return@withContext Result(false, e.message)
+                    return false
                 }
 
-                delay(retryDelayMs * (attempt + 1))
+                delay(10)
             }
         }
 
-        Result(false, "Unknown error")
+      return false
     }
 
     override fun price() = properties.price
