@@ -160,6 +160,7 @@ class PaymentExternalSystemAdapterImpl(
                             )
                         )
                         .POST(HttpRequest.BodyPublishers.noBody())
+                        .header("x-idempotency-key",token)
                         .timeout(Duration.ofMillis(HTTP_TIMEOUT_MS))
                         .build()
 
