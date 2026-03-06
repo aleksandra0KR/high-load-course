@@ -27,12 +27,14 @@ class PaymentExternalSystemAdapterImpl(
 ) : PaymentExternalSystemAdapter {
 
     companion object {
-        private val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
-        private val mapper = ObjectMapper().registerKotlinModule()
+        val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
+        val mapper = ObjectMapper().registerKotlinModule()
     }
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
+
+    private val requestAverageProcessingTime = properties.averageProcessingTime
 
     private val client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(1))
@@ -45,12 +47,9 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     private val semaphore = Semaphore(properties.parallelRequests)
-
     private val maxRetries = 2
     private val retryDelayMs = 10
 
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
 
@@ -58,7 +57,7 @@ class PaymentExternalSystemAdapterImpl(
 
         val startedAt = now()
         dbScope.launch {
-            while (true) {
+            repeat(100) {
                 try {
                     paymentESService.update(paymentId) {
                         it.logSubmission(
@@ -68,7 +67,7 @@ class PaymentExternalSystemAdapterImpl(
                             Duration.ofMillis(startedAt - paymentStartedAt)
                         )
                     }
-                    break
+                    return@repeat
                 } catch (_: java.lang.IllegalArgumentException) {
                     delay(10)
                 }
@@ -81,12 +80,12 @@ class PaymentExternalSystemAdapterImpl(
 
         val processedAt = now()
         dbScope.launch {
-            while (true) {
+            repeat(100) {
                 try {
                     paymentESService.update(paymentId) {
                         it.logProcessing(result, processedAt, transactionId)
                     }
-                    break
+                    return@repeat
                 } catch (_: java.lang.IllegalArgumentException) {
                     delay(10)
                 }
@@ -115,7 +114,7 @@ class PaymentExternalSystemAdapterImpl(
                         return false
                     }
 
-                    val request = java.net.http.HttpRequest.newBuilder()
+                    val request = HttpRequest.newBuilder()
                         .uri(
                             URI(
                                 "http://$paymentProviderHostPort/external/process" +
@@ -136,7 +135,7 @@ class PaymentExternalSystemAdapterImpl(
                         mapper.readValue(response.body(), ExternalSysResponse::class.java)
                     } catch (e: Exception) {
                         logger.error(
-                            "[$accountName] Failed to parse response for txId: $transactionId",
+                            "[$accountName] JSON parsing fail: ${response.body()}",
                             e
                         )
                         return false
@@ -179,8 +178,11 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     override fun price() = properties.price
+
     override fun isEnabled() = properties.enabled
+
     override fun name() = properties.accountName
+
 }
 
 public fun now() = System.currentTimeMillis()
