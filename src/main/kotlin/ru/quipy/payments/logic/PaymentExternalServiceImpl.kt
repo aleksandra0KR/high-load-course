@@ -32,7 +32,7 @@ class PaymentExternalSystemAdapterImpl(
         val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
         val mapper = ObjectMapper().registerKotlinModule()
 
-        private const val HEDGE_DELAY_MS = 100L
+        private const val HEDGE_DELAY_MS = 50L
         private const val HTTP_TIMEOUT_MS = 350L
         private const val MAX_RETRIES = 2
     }
@@ -193,7 +193,6 @@ class PaymentExternalSystemAdapterImpl(
                     return false
                 }
 
-                delay(10)
             }
         }
 
