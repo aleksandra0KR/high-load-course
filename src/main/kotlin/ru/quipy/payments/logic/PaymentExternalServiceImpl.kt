@@ -29,8 +29,8 @@ class PaymentExternalSystemAdapterImpl(
 ) : PaymentExternalSystemAdapter {
 
     companion object {
-        private val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
-        private val mapper = ObjectMapper().registerKotlinModule()
+        val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
+        val mapper = ObjectMapper().registerKotlinModule()
 
         private const val HEDGE_DELAY_MS = 100L
         private const val HTTP_TIMEOUT_MS = 350L
@@ -51,8 +51,6 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     private val semaphore = Semaphore(properties.parallelRequests)
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override suspend fun performPaymentAsync(
         paymentId: UUID,
@@ -150,20 +148,15 @@ class PaymentExternalSystemAdapterImpl(
                 semaphore.withPermit {
 
                     if (!rateLimiter.tick()) {
-                        delay(1)
-                        return@withPermit
+                        return false
                     }
 
                     val request = HttpRequest.newBuilder()
                         .uri(
                             URI(
                                 "http://$paymentProviderHostPort/external/process" +
-                                        "?serviceName=$serviceName" +
-                                        "&token=$token" +
-                                        "&accountName=$accountName" +
-                                        "&transactionId=$transactionId" +
-                                        "&paymentId=$paymentId" +
-                                        "&amount=$amount"
+                                        "?serviceName=$serviceName&token=$token&accountName=$accountName" +
+                                        "&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"
                             )
                         )
                         .POST(HttpRequest.BodyPublishers.noBody())
@@ -213,10 +206,6 @@ class PaymentExternalSystemAdapterImpl(
 
     override fun name() = properties.accountName
 
-    data class Result(
-        val status: Boolean,
-        val message: String?
-    )
 }
 
-fun now() = System.currentTimeMillis()
+public fun now() = System.currentTimeMillis()

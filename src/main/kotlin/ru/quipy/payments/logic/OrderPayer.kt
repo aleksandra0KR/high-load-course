@@ -15,12 +15,11 @@ import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
+import ru.quipy.payments.metrics.PaymentMetrics
 import java.util.*
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-
-data class www(val id: Long)
 
 @Service
 class OrderPayer(val dbScope: CoroutineScope) {
@@ -35,6 +34,9 @@ class OrderPayer(val dbScope: CoroutineScope) {
     @Autowired
     private lateinit var paymentService: PaymentService
 
+    @Autowired
+    private lateinit var paymentMetrics: PaymentMetrics
+
     private val paymentExecutor = ThreadPoolExecutor(
         20,
         20,
@@ -44,8 +46,7 @@ class OrderPayer(val dbScope: CoroutineScope) {
         NamedThreadFactory("payment-submission-executor"),
         ThreadPoolExecutor.DiscardOldestPolicy()
     )
-    val dispatcher = paymentExecutor.asCoroutineDispatcher()
-    private val scope = CoroutineScope(SupervisorJob() + dispatcher)
+    private val scope = CoroutineScope(SupervisorJob() + paymentExecutor.asCoroutineDispatcher())
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val createdAt = System.currentTimeMillis()

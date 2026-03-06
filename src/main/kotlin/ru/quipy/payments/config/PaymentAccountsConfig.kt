@@ -66,10 +66,7 @@ class PaymentAccountsConfig {
 
 
     @Bean
-    fun accountAdapters(
-        paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
-        paymentMetrics: PaymentMetrics
-    ): List<PaymentExternalSystemAdapter> {
+    fun accountAdapters(paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>, paymentMetrics: PaymentMetrics): List<PaymentExternalSystemAdapter> {
         val request = HttpRequest.newBuilder()
             .uri(URI("http://${paymentProviderHostPort}/external/accounts?serviceName=$serviceName&token=$token"))
             .GET()
@@ -80,10 +77,7 @@ class PaymentAccountsConfig {
         println("\nPayment accounts list:")
         return mapper.readValue<List<PaymentAccountProperties>>(
             resp.body(),
-            mapper.typeFactory.constructCollectionType(
-                List::class.java,
-                PaymentAccountProperties::class.java
-            )
+            mapper.typeFactory.constructCollectionType(List::class.java, PaymentAccountProperties::class.java)
         )
             .filter { it.accountName in allowedAccounts }
             .map { it.copy(enabled = true) }

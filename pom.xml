@@ -143,56 +143,48 @@
       <version>${kotlin.version}</version>
     </dependency>
 
-    <!-- Coroutines -->
     <dependency>
       <groupId>org.jetbrains.kotlinx</groupId>
       <artifactId>kotlinx-coroutines-core</artifactId>
       <version>${coroutines.version}</version>
     </dependency>
 
-    <!-- Ktor Client Core -->
     <dependency>
       <groupId>io.ktor</groupId>
       <artifactId>ktor-client-core-jvm</artifactId>
       <version>${ktor.version}</version>
     </dependency>
 
-    <!-- Ktor CIO Engine (асинхронный, на корутинах) -->
     <dependency>
       <groupId>io.ktor</groupId>
       <artifactId>ktor-client-cio-jvm</artifactId>
       <version>${ktor.version}</version>
     </dependency>
 
-    <!-- Content Negotiation (для JSON) -->
     <dependency>
       <groupId>io.ktor</groupId>
       <artifactId>ktor-client-content-negotiation-jvm</artifactId>
       <version>${ktor.version}</version>
     </dependency>
 
-    <!-- Kotlinx Serialization для JSON -->
     <dependency>
       <groupId>io.ktor</groupId>
       <artifactId>ktor-serialization-kotlinx-json-jvm</artifactId>
       <version>${ktor.version}</version>
     </dependency>
 
-    <!-- Логирование запросов (опционально) -->
     <dependency>
       <groupId>io.ktor</groupId>
       <artifactId>ktor-client-logging-jvm</artifactId>
       <version>${ktor.version}</version>
     </dependency>
 
-    <!-- Логирование запросов (опционально) -->
     <dependency>
       <groupId>io.ktor</groupId>
       <artifactId>ktor-client-java</artifactId>
       <version>${ktor.version}</version>
     </dependency>
 
-    <!-- Логирование запросов (опционально) -->
     <dependency>
       <groupId>io.ktor</groupId>
       <artifactId>ktor-client-java-jvm</artifactId>
