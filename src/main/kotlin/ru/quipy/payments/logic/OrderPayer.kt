@@ -36,11 +36,11 @@ class OrderPayer(val dbScope: CoroutineScope) {
     private lateinit var paymentService: PaymentService
 
     private val paymentExecutor = ThreadPoolExecutor(
-        120,
-        120,
-        60L,
+        20,
+        20,
+        6L,
         TimeUnit.SECONDS,
-        LinkedBlockingQueue(30_000),
+        LinkedBlockingQueue(10_000),
         NamedThreadFactory("payment-submission-executor"),
         ThreadPoolExecutor.DiscardOldestPolicy()
     )
@@ -53,13 +53,9 @@ class OrderPayer(val dbScope: CoroutineScope) {
         scope.launch {
             dbScope.launch {
                 paymentESService.create {
-                    it.create(
-                        paymentId,
-                        orderId,
-                        amount
-                    )
+                    it.create(paymentId, orderId, amount)
                 }
-            }
+            }.join()
 
             logger.trace("Payment ${paymentId}  for order $orderId created.")
             paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)

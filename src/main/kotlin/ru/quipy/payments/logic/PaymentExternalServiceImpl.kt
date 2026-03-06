@@ -3,6 +3,8 @@ package ru.quipy.payments.logic
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import kotlinx.coroutines.*
+import kotlinx.coroutines.future.await
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.slf4j.LoggerFactory
@@ -10,10 +12,10 @@ import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.metrics.PaymentMetrics
-import java.net.SocketTimeoutException
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.time.Duration
 import java.util.*
 
@@ -29,13 +31,17 @@ class PaymentExternalSystemAdapterImpl(
     companion object {
         private val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
         private val mapper = ObjectMapper().registerKotlinModule()
+
+        private const val HEDGE_DELAY_MS = 100L
+        private const val HTTP_TIMEOUT_MS = 350L
+        private const val MAX_RETRIES = 2
     }
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
 
     private val client = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(1))
+        .connectTimeout(Duration.ofSeconds(2))
         .version(HttpClient.Version.HTTP_2)
         .build()
 
@@ -46,50 +52,82 @@ class PaymentExternalSystemAdapterImpl(
 
     private val semaphore = Semaphore(properties.parallelRequests)
 
-    private val maxRetries = 2
-    private val retryDelayMs = 10
-
-
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    override suspend fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+    override suspend fun performPaymentAsync(
+        paymentId: UUID,
+        amount: Int,
+        paymentStartedAt: Long,
+        deadline: Long
+    ) {
 
         val transactionId = UUID.randomUUID()
 
         val startedAt = now()
+
         dbScope.launch {
-            while (true) {
-                try {
-                    paymentESService.update(paymentId) {
-                        it.logSubmission(
-                            success = true,
-                            transactionId,
-                            startedAt,
-                            Duration.ofMillis(startedAt - paymentStartedAt)
-                        )
-                    }
-                    break
-                } catch (_: java.lang.IllegalArgumentException) {
-                    delay(10)
+            try {
+                paymentESService.update(paymentId) {
+                    it.logSubmission(
+                        success = true,
+                        transactionId,
+                        startedAt,
+                        Duration.ofMillis(startedAt - paymentStartedAt)
+                    )
                 }
+            } catch (e: Exception) {
+                logger.error("Submission log failed", e)
             }
         }
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
-        val result = processAttempt(paymentId, transactionId, amount, deadline, 1)
+        val result = processWithHedging(
+            paymentId,
+            transactionId,
+            amount,
+            deadline
+        )
 
         val processedAt = now()
+
         dbScope.launch {
-            while (true) {
-                try {
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(result, processedAt, transactionId)
-                    }
-                    break
-                } catch (_: java.lang.IllegalArgumentException) {
-                    delay(10)
+            try {
+                paymentESService.update(paymentId) {
+                    it.logProcessing(result, processedAt, transactionId)
                 }
+            } catch (e: Exception) {
+                logger.error("Processing log failed", e)
+            }
+        }
+    }
+
+    private suspend fun processWithHedging(
+        paymentId: UUID,
+        transactionId: UUID,
+        amount: Int,
+        deadline: Long
+    ): Boolean = coroutineScope {
+
+        val first = async {
+            processAttempt(paymentId, transactionId, amount, deadline)
+        }
+
+        val second = async {
+            delay(HEDGE_DELAY_MS)
+            processAttempt(paymentId, transactionId, amount, deadline)
+        }
+
+        select<Boolean> {
+
+            first.onAwait {
+                second.cancel()
+                it
+            }
+
+            second.onAwait {
+                first.cancel()
+                it
             }
         }
     }
@@ -98,76 +136,67 @@ class PaymentExternalSystemAdapterImpl(
         paymentId: UUID,
         transactionId: UUID,
         amount: Int,
-        deadline: Long,
-        attempt: Int
+        deadline: Long
     ): Boolean {
-        repeat(maxRetries) { attempt ->
+
+        repeat(MAX_RETRIES) { retry ->
+
             if (now() > deadline) {
-                paymentESService.update(paymentId) {
-                    it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded")
-                }
                 return false
             }
+
             try {
+
                 semaphore.withPermit {
 
                     if (!rateLimiter.tick()) {
-                        return false
+                        delay(1)
+                        return@withPermit
                     }
 
-                    val request = java.net.http.HttpRequest.newBuilder()
+                    val request = HttpRequest.newBuilder()
                         .uri(
                             URI(
                                 "http://$paymentProviderHostPort/external/process" +
-                                        "?serviceName=$serviceName&token=$token&accountName=$accountName" +
-                                        "&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"
+                                        "?serviceName=$serviceName" +
+                                        "&token=$token" +
+                                        "&accountName=$accountName" +
+                                        "&transactionId=$transactionId" +
+                                        "&paymentId=$paymentId" +
+                                        "&amount=$amount"
                             )
                         )
                         .POST(HttpRequest.BodyPublishers.noBody())
-                        .timeout(Duration.ofSeconds(1))
+                        .timeout(Duration.ofMillis(HTTP_TIMEOUT_MS))
                         .build()
 
-                    val response = client.send(
-                        request,
-                        java.net.http.HttpResponse.BodyHandlers.ofString()
+                    val response = client
+                        .sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                        .await()
+
+                    val body = mapper.readValue(
+                        response.body(),
+                        ExternalSysResponse::class.java
                     )
 
-                    val body = try {
-                        mapper.readValue(response.body(), ExternalSysResponse::class.java)
-                    } catch (e: Exception) {
-                        logger.error(
-                            "[$accountName] Failed to parse response for txId: $transactionId",
-                            e
-                        )
-                        return false
-                    }
+                    if (body.result) {
 
-                    if (!body.result) {
-                        if (attempt == maxRetries - 1) {
-                            return false
-                        }
-
-                        delay(10)
-
-                    } else {
                         logger.info(
-                            "[$accountName] Payment processed for txId: $transactionId, succeeded: ${body.result}"
+                            "[$accountName] Payment processed for txId: $transactionId"
                         )
 
                         return true
                     }
-
                 }
+
             } catch (e: Exception) {
 
-                when (e) {
-                    is SocketTimeoutException -> logger.error(
-                        "[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId, retry: ${attempt + 1}/$maxRetries",
-                    )
-                    else ->  logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
-                }
+                logger.warn(
+                    "[$accountName] attempt ${retry + 1} failed for txId: $transactionId",
+                    e
+                )
 
-                if (attempt == maxRetries - 1) {
+                if (retry == MAX_RETRIES - 1) {
                     return false
                 }
 
@@ -175,12 +204,19 @@ class PaymentExternalSystemAdapterImpl(
             }
         }
 
-      return false
+        return false
     }
 
     override fun price() = properties.price
+
     override fun isEnabled() = properties.enabled
+
     override fun name() = properties.accountName
+
+    data class Result(
+        val status: Boolean,
+        val message: String?
+    )
 }
 
-public fun now() = System.currentTimeMillis()
+fun now() = System.currentTimeMillis()
