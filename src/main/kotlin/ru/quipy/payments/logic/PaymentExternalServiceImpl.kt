@@ -2,6 +2,9 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.github.resilience4j.circuitbreaker.CircuitBreaker
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig.SlidingWindowType
 import kotlinx.coroutines.*
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.selects.select
@@ -18,6 +21,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.TimeUnit
 
 class PaymentExternalSystemAdapterImpl(
     private val properties: PaymentAccountProperties,
@@ -51,6 +55,18 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     private val semaphore = Semaphore(properties.parallelRequests)
+
+    private val circuitBreaker: CircuitBreaker = CircuitBreaker.of(
+        "payment-$accountName",
+        CircuitBreakerConfig.custom()
+            .slidingWindowType(SlidingWindowType.TIME_BASED)
+            .slidingWindowSize(2)
+            .failureRateThreshold(20.0f)
+            .minimumNumberOfCalls(10)
+            .waitDurationInOpenState(Duration.ofSeconds(1))
+            .permittedNumberOfCallsInHalfOpenState(5)
+            .build()
+    )
 
     override suspend fun performPaymentAsync(
         paymentId: UUID,
@@ -143,47 +159,41 @@ class PaymentExternalSystemAdapterImpl(
                 return false
             }
 
+            if (!circuitBreaker.tryAcquirePermission()) {
+                logger.warn("[$accountName] Circuit breaker OPEN, skipping request")
+                return false
+            }
+
             try {
 
                 semaphore.withPermit {
 
                     if (!rateLimiter.tick()) {
+                        circuitBreaker.onError(0, TimeUnit.MILLISECONDS, RuntimeException("Rate limited"))
                         return false
                     }
 
-                    val request = HttpRequest.newBuilder()
-                        .uri(
-                            URI(
-                                "http://$paymentProviderHostPort/external/process" +
-                                        "?serviceName=$serviceName&token=$token&accountName=$accountName" +
-                                        "&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"
-                            )
-                        )
-                        .POST(HttpRequest.BodyPublishers.noBody())
-                        .header("x-idempotency-key",token)
-                        .timeout(Duration.ofMillis(HTTP_TIMEOUT_MS))
-                        .build()
+                    val start = now()
 
-                    val response = client
-                        .sendAsync(request, HttpResponse.BodyHandlers.ofString())
-                        .await()
-
-                    val body = mapper.readValue(
-                        response.body(),
-                        ExternalSysResponse::class.java
+                    val result = executeExternalCall(
+                        paymentId,
+                        transactionId,
+                        amount
                     )
 
-                    if (body.result) {
+                    val duration = now() - start
 
-                        logger.info(
-                            "[$accountName] Payment processed for txId: $transactionId"
-                        )
-
+                    if (result) {
+                        circuitBreaker.onSuccess(duration, TimeUnit.MILLISECONDS)
                         return true
+                    } else {
+                        circuitBreaker.onError(duration, TimeUnit.MILLISECONDS, RuntimeException("External failure"))
                     }
                 }
 
             } catch (e: Exception) {
+
+                circuitBreaker.onError(0, TimeUnit.MILLISECONDS, e)
 
                 logger.warn(
                     "[$accountName] attempt ${retry + 1} failed for txId: $transactionId",
@@ -193,8 +203,43 @@ class PaymentExternalSystemAdapterImpl(
                 if (retry == MAX_RETRIES - 1) {
                     return false
                 }
-
             }
+        }
+
+        return false
+    }
+
+    private suspend fun executeExternalCall(
+        paymentId: UUID,
+        transactionId: UUID,
+        amount: Int
+    ): Boolean {
+
+        val request = HttpRequest.newBuilder()
+            .uri(
+                URI(
+                    "http://$paymentProviderHostPort/external/process" +
+                            "?serviceName=$serviceName&token=$token&accountName=$accountName" +
+                            "&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"
+                )
+            )
+            .POST(HttpRequest.BodyPublishers.noBody())
+            .header("x-idempotency-key", token)
+            .timeout(Duration.ofMillis(HTTP_TIMEOUT_MS))
+            .build()
+
+        val response = client
+            .sendAsync(request, HttpResponse.BodyHandlers.ofString())
+            .await()
+
+        val body = mapper.readValue(
+            response.body(),
+            ExternalSysResponse::class.java
+        )
+
+        if (body.result) {
+            logger.info("[$accountName] Payment processed for txId: $transactionId")
+            return true
         }
 
         return false
@@ -208,4 +253,4 @@ class PaymentExternalSystemAdapterImpl(
 
 }
 
-public fun now() = System.currentTimeMillis()
+fun now() = System.currentTimeMillis()
