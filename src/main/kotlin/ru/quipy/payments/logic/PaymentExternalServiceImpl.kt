@@ -169,7 +169,6 @@ class PaymentExternalSystemAdapterImpl(
                 semaphore.withPermit {
 
                     if (!rateLimiter.tick()) {
-                        circuitBreaker.onError(0, TimeUnit.MILLISECONDS, RuntimeException("Rate limited"))
                         return false
                     }
 
