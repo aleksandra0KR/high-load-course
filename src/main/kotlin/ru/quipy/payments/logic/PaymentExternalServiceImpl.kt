@@ -35,8 +35,8 @@ class PaymentExternalSystemAdapterImpl(
 ) : PaymentExternalSystemAdapter {
 
     companion object {
-        private val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
-        private val mapper = ObjectMapper().registerKotlinModule()
+        val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
+        val mapper = ObjectMapper().registerKotlinModule()
 
         private const val HEDGE_DELAY_MS = 200L
         private const val HTTP_TIMEOUT_MS = 350L
@@ -95,11 +95,6 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-    fun shutdown() {
-        queue.close()
-        workerScope.cancel()
-    }
-
     override suspend fun performPaymentAsync(
         paymentId: UUID,
         amount: Int,
@@ -108,6 +103,7 @@ class PaymentExternalSystemAdapterImpl(
     ) {
 
         val transactionId = UUID.randomUUID()
+
         val startedAt = now()
 
         dbScope.launch {
@@ -188,17 +184,27 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-    private suspend fun processWithHedging(paymentId: UUID, transactionId: UUID, amount: Int, deadline: Long): Boolean =
-        coroutineScope {
-            val first = async { processAttempt(paymentId, transactionId, amount, deadline, MAX_RETRIES) }
+    private suspend fun processWithHedging(paymentId: UUID, transactionId: UUID, amount: Int, deadline: Long): Boolean = coroutineScope {
+
+        val first = async {
+                processAttempt(paymentId, transactionId, amount, deadline, MAX_RETRIES)
+            }
             val second = async {
                 delay(HEDGE_DELAY_MS)
                 processAttempt(paymentId, transactionId, amount, deadline, MAX_RETRIES)
             }
 
             select<Boolean> {
-                first.onAwait { second.cancel(); it }
-                second.onAwait { first.cancel(); it }
+
+                first.onAwait {
+                    second.cancel()
+                    it
+                }
+
+                second.onAwait {
+                    first.cancel()
+                    it
+                }
             }
         }
 
@@ -213,12 +219,23 @@ class PaymentExternalSystemAdapterImpl(
         retries: Int
     ): Boolean {
         repeat(retries) { retry ->
-            if (now() > deadline) return false
+            if (now() > deadline) {
+                return false
+            }
 
             try {
+
                 semaphore.withPermit {
-                    if (!rateLimiter.tick()) return false
-                    val result = executeExternalCall(paymentId, transactionId, amount)
+
+                    if (!rateLimiter.tick()) {
+                        return false
+                    }
+
+                    val result = executeExternalCall(
+                        paymentId,
+                        transactionId,
+                        amount
+                    )
                     if (result) return true
                 }
             } catch (e: Exception) {
@@ -243,11 +260,21 @@ class PaymentExternalSystemAdapterImpl(
             .timeout(Duration.ofMillis(HTTP_TIMEOUT_MS))
             .build()
 
-        val response = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
-        val body = mapper.readValue(response.body(), ExternalSysResponse::class.java)
+        val response = client
+            .sendAsync(request, HttpResponse.BodyHandlers.ofString())
+            .await()
 
-        if (body.result) logger.info("[$accountName] Payment processed for txId: $transactionId")
-        return body.result
+        val body = mapper.readValue(
+            response.body(),
+            ExternalSysResponse::class.java
+        )
+
+        if (body.result) {
+            logger.info("[$accountName] Payment processed for txId: $transactionId")
+            return true
+        }
+
+        return false
     }
 
     private fun logProcessing(paymentId: UUID, transactionId: UUID, result: Boolean) {
@@ -267,8 +294,11 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     override fun price() = properties.price
+
     override fun isEnabled() = properties.enabled
+
     override fun name() = properties.accountName
+
 }
 
 fun now() = System.currentTimeMillis()
