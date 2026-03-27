@@ -36,7 +36,7 @@ class PaymentExternalSystemAdapterImpl(
         val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
         val mapper = ObjectMapper().registerKotlinModule()
 
-        private const val HEDGE_DELAY_MS = 1000L
+        private const val HEDGE_DELAY_MS = 200L // уменьшили
         private const val HTTP_TIMEOUT_MS = 350L
         private const val MAX_RETRIES = 2
     }
@@ -96,12 +96,9 @@ class PaymentExternalSystemAdapterImpl(
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
-        val result = processWithHedging(
-            paymentId,
-            transactionId,
-            amount,
-            deadline
-        )
+        val result = executeWithCircuitBreaker {
+            processWithHedging(paymentId, transactionId, amount, deadline)
+        }
 
         val processedAt = now()
 
@@ -113,6 +110,34 @@ class PaymentExternalSystemAdapterImpl(
             } catch (e: Exception) {
                 logger.error("Processing log failed", e)
             }
+        }
+    }
+
+    private suspend fun executeWithCircuitBreaker(block: suspend () -> Boolean): Boolean {
+
+        if (!circuitBreaker.tryAcquirePermission()) {
+            logger.warn("[$accountName] Circuit breaker OPEN, skipping request")
+            return false
+        }
+
+        val start = now()
+
+        return try {
+            val result = block()
+
+            val duration = now() - start
+
+            if (result) {
+                circuitBreaker.onSuccess(duration, TimeUnit.MILLISECONDS)
+            } else {
+                circuitBreaker.onError(duration, TimeUnit.MILLISECONDS, RuntimeException("Failed"))
+            }
+
+            result
+
+        } catch (e: Exception) {
+            circuitBreaker.onError(0, TimeUnit.MILLISECONDS, e)
+            false
         }
     }
 
@@ -155,24 +180,14 @@ class PaymentExternalSystemAdapterImpl(
 
         repeat(MAX_RETRIES) { retry ->
 
-            if (now() > deadline) {
-                return false
-            }
-
-            if (!circuitBreaker.tryAcquirePermission()) {
-                logger.warn("[$accountName] Circuit breaker OPEN, skipping request")
-                return false
-            }
+            if (now() > deadline) return false
 
             try {
-
                 semaphore.withPermit {
 
                     if (!rateLimiter.tick()) {
                         return false
                     }
-
-                    val start = now()
 
                     val result = executeExternalCall(
                         paymentId,
@@ -180,28 +195,17 @@ class PaymentExternalSystemAdapterImpl(
                         amount
                     )
 
-                    val duration = now() - start
-
-                    if (result) {
-                        circuitBreaker.onSuccess(duration, TimeUnit.MILLISECONDS)
-                        return true
-                    } else {
-                        circuitBreaker.onError(duration, TimeUnit.MILLISECONDS, RuntimeException("External failure"))
-                    }
+                    if (result) return true
                 }
 
             } catch (e: Exception) {
-
-                circuitBreaker.onError(0, TimeUnit.MILLISECONDS, e)
 
                 logger.warn(
                     "[$accountName] attempt ${retry + 1} failed for txId: $transactionId",
                     e
                 )
 
-                if (retry == MAX_RETRIES - 1) {
-                    return false
-                }
+                if (retry == MAX_RETRIES - 1) return false
             }
         }
 
@@ -236,12 +240,11 @@ class PaymentExternalSystemAdapterImpl(
             ExternalSysResponse::class.java
         )
 
-        if (body.result) {
-            logger.info("[$accountName] Payment processed for txId: $transactionId")
-            return true
+        return body.result.also {
+            if (it) {
+                logger.info("[$accountName] Payment processed for txId: $transactionId")
+            }
         }
-
-        return false
     }
 
     override fun price() = properties.price
