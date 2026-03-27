@@ -36,7 +36,7 @@ class PaymentExternalSystemAdapterImpl(
         val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
         val mapper = ObjectMapper().registerKotlinModule()
 
-        private const val HEDGE_DELAY_MS = 200L // уменьшили
+        private const val HEDGE_DELAY_MS = 200L
         private const val HTTP_TIMEOUT_MS = 350L
         private const val MAX_RETRIES = 2
     }
@@ -96,8 +96,12 @@ class PaymentExternalSystemAdapterImpl(
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
-        val result = executeWithCircuitBreaker {
-            processWithHedging(paymentId, transactionId, amount, deadline)
+        val result = executeWithCircuitBreaker { useHedge ->
+            if (useHedge) {
+                processWithHedging(paymentId, transactionId, amount, deadline)
+            } else {
+                processSingle(paymentId, transactionId, amount, deadline)
+            }
         }
 
         val processedAt = now()
@@ -113,7 +117,9 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-    private suspend fun executeWithCircuitBreaker(block: suspend () -> Boolean): Boolean {
+    private suspend fun executeWithCircuitBreaker(
+        block: suspend (useHedge: Boolean) -> Boolean
+    ): Boolean {
 
         if (!circuitBreaker.tryAcquirePermission()) {
             logger.warn("[$accountName] Circuit breaker OPEN, skipping request")
@@ -122,8 +128,14 @@ class PaymentExternalSystemAdapterImpl(
 
         val start = now()
 
+        val useHedge = circuitBreaker.state != CircuitBreaker.State.HALF_OPEN
+
+        if (!useHedge) {
+            logger.info("[$accountName] HALF_OPEN → hedge disabled")
+        }
+
         return try {
-            val result = block()
+            val result = block(useHedge)
 
             val duration = now() - start
 
@@ -149,12 +161,12 @@ class PaymentExternalSystemAdapterImpl(
     ): Boolean = coroutineScope {
 
         val first = async {
-            processAttempt(paymentId, transactionId, amount, deadline)
+            processAttempt(paymentId, transactionId, amount, deadline, MAX_RETRIES)
         }
 
         val second = async {
             delay(HEDGE_DELAY_MS)
-            processAttempt(paymentId, transactionId, amount, deadline)
+            processAttempt(paymentId, transactionId, amount, deadline, MAX_RETRIES)
         }
 
         select<Boolean> {
@@ -171,14 +183,24 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-    private suspend fun processAttempt(
+    private suspend fun processSingle(
         paymentId: UUID,
         transactionId: UUID,
         amount: Int,
         deadline: Long
     ): Boolean {
+        return processAttempt(paymentId, transactionId, amount, deadline, 1)
+    }
 
-        repeat(MAX_RETRIES) { retry ->
+    private suspend fun processAttempt(
+        paymentId: UUID,
+        transactionId: UUID,
+        amount: Int,
+        deadline: Long,
+        retries: Int
+    ): Boolean {
+
+        repeat(retries) { retry ->
 
             if (now() > deadline) return false
 
@@ -205,7 +227,7 @@ class PaymentExternalSystemAdapterImpl(
                     e
                 )
 
-                if (retry == MAX_RETRIES - 1) return false
+                if (retry == retries - 1) return false
             }
         }
 
