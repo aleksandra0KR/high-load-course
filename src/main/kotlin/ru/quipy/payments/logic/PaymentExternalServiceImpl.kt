@@ -35,14 +35,15 @@ class PaymentExternalSystemAdapterImpl(
 ) : PaymentExternalSystemAdapter {
 
     companion object {
-        val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
-        val mapper = ObjectMapper().registerKotlinModule()
+        private val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
+        private val mapper = ObjectMapper().registerKotlinModule()
 
         private const val HEDGE_DELAY_MS = 200L
         private const val HTTP_TIMEOUT_MS = 350L
         private const val MAX_RETRIES = 2
         private const val QUEUE_CAPACITY = 1000
         private const val QUEUE_WORKERS = 2
+        private const val CB_RETRY_DELAY_MS = 100L
     }
 
     private val serviceName = properties.serviceName
@@ -147,6 +148,10 @@ class PaymentExternalSystemAdapterImpl(
                 continue
             }
 
+            while (!circuitBreaker.tryAcquirePermission()) {
+                delay(CB_RETRY_DELAY_MS)
+            }
+
             val result = executeWithCircuitBreaker { useHedge ->
                 if (useHedge) processWithHedging(task.paymentId, task.transactionId, task.amount, task.deadline)
                 else processSingle(task.paymentId, task.transactionId, task.amount, task.deadline)
@@ -200,7 +205,13 @@ class PaymentExternalSystemAdapterImpl(
     private suspend fun processSingle(paymentId: UUID, transactionId: UUID, amount: Int, deadline: Long): Boolean =
         processAttempt(paymentId, transactionId, amount, deadline, 1)
 
-    private suspend fun processAttempt(paymentId: UUID, transactionId: UUID, amount: Int, deadline: Long, retries: Int): Boolean {
+    private suspend fun processAttempt(
+        paymentId: UUID,
+        transactionId: UUID,
+        amount: Int,
+        deadline: Long,
+        retries: Int
+    ): Boolean {
         repeat(retries) { retry ->
             if (now() > deadline) return false
 
@@ -242,12 +253,17 @@ class PaymentExternalSystemAdapterImpl(
     private fun logProcessing(paymentId: UUID, transactionId: UUID, result: Boolean) {
         val processedAt = now()
         dbScope.launch {
-            runCatching {
+            try {
                 paymentESService.update(paymentId) {
                     it.logProcessing(result, processedAt, transactionId)
                 }
-            }.onFailure { logger.error("Processing log failed", it) }
+
+            } catch (e: Exception) {
+                logger.error("Processing log failed", e)
+            }
         }
+
+
     }
 
     override fun price() = properties.price
