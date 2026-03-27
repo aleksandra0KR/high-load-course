@@ -262,11 +262,12 @@ class PaymentExternalSystemAdapterImpl(
             ExternalSysResponse::class.java
         )
 
-        return body.result.also {
-            if (it) {
-                logger.info("[$accountName] Payment processed for txId: $transactionId")
-            }
+        if (body.result) {
+            logger.info("[$accountName] Payment processed for txId: $transactionId")
+            return true
         }
+
+        return false
     }
 
     override fun price() = properties.price
