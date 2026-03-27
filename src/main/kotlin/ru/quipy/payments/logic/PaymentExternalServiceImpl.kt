@@ -6,6 +6,8 @@ import io.github.resilience4j.circuitbreaker.CircuitBreaker
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig.SlidingWindowType
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Semaphore
@@ -39,6 +41,8 @@ class PaymentExternalSystemAdapterImpl(
         private const val HEDGE_DELAY_MS = 200L
         private const val HTTP_TIMEOUT_MS = 350L
         private const val MAX_RETRIES = 2
+        private const val QUEUE_CAPACITY = 1000
+        private const val QUEUE_WORKERS = 2
     }
 
     private val serviceName = properties.serviceName
@@ -68,6 +72,33 @@ class PaymentExternalSystemAdapterImpl(
             .build()
     )
 
+    private val queue = Channel<QueuedPayment>(
+        capacity = QUEUE_CAPACITY,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+
+    private val workerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    data class QueuedPayment(
+        val paymentId: UUID,
+        val transactionId: UUID,
+        val amount: Int,
+        val deadline: Long
+    )
+
+    init {
+        repeat(QUEUE_WORKERS) {
+            workerScope.launch {
+                processQueue()
+            }
+        }
+    }
+
+    fun shutdown() {
+        queue.close()
+        workerScope.cancel()
+    }
+
     override suspend fun performPaymentAsync(
         paymentId: UUID,
         amount: Int,
@@ -76,7 +107,6 @@ class PaymentExternalSystemAdapterImpl(
     ) {
 
         val transactionId = UUID.randomUUID()
-
         val startedAt = now()
 
         dbScope.launch {
@@ -96,36 +126,37 @@ class PaymentExternalSystemAdapterImpl(
 
         logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
-        val result = executeWithCircuitBreaker { useHedge ->
-            if (useHedge) {
-                processWithHedging(paymentId, transactionId, amount, deadline)
-            } else {
-                processSingle(paymentId, transactionId, amount, deadline)
-            }
+        if (!circuitBreaker.tryAcquirePermission()) {
+            logger.warn("[$accountName] CB OPEN → enqueue $paymentId")
+            queue.trySend(QueuedPayment(paymentId, transactionId, amount, deadline))
+            return
         }
 
-        val processedAt = now()
+        val result = executeWithCircuitBreaker { useHedge ->
+            if (useHedge) processWithHedging(paymentId, transactionId, amount, deadline)
+            else processSingle(paymentId, transactionId, amount, deadline)
+        }
 
-        dbScope.launch {
-            try {
-                paymentESService.update(paymentId) {
-                    it.logProcessing(result, processedAt, transactionId)
-                }
-            } catch (e: Exception) {
-                logger.error("Processing log failed", e)
+        logProcessing(paymentId, transactionId, result)
+    }
+
+    private suspend fun processQueue() {
+        for (task in queue) {
+            if (now() > task.deadline) {
+                logger.warn("Expired in queue → ${task.paymentId}")
+                continue
             }
+
+            val result = executeWithCircuitBreaker { useHedge ->
+                if (useHedge) processWithHedging(task.paymentId, task.transactionId, task.amount, task.deadline)
+                else processSingle(task.paymentId, task.transactionId, task.amount, task.deadline)
+            }
+
+            logProcessing(task.paymentId, task.transactionId, result)
         }
     }
 
-    private suspend fun executeWithCircuitBreaker(
-        block: suspend (useHedge: Boolean) -> Boolean
-    ): Boolean {
-
-        if (!circuitBreaker.tryAcquirePermission()) {
-            logger.warn("[$accountName] Circuit breaker OPEN, skipping request")
-            return false
-        }
-
+    private suspend fun executeWithCircuitBreaker(block: suspend (useHedge: Boolean) -> Boolean): Boolean {
         val start = now()
 
         val useHedge = circuitBreaker.state != CircuitBreaker.State.HALF_OPEN
@@ -136,7 +167,6 @@ class PaymentExternalSystemAdapterImpl(
 
         return try {
             val result = block(useHedge)
-
             val duration = now() - start
 
             if (result) {
@@ -153,93 +183,42 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-    private suspend fun processWithHedging(
-        paymentId: UUID,
-        transactionId: UUID,
-        amount: Int,
-        deadline: Long
-    ): Boolean = coroutineScope {
-
-        val first = async {
-            processAttempt(paymentId, transactionId, amount, deadline, MAX_RETRIES)
-        }
-
-        val second = async {
-            delay(HEDGE_DELAY_MS)
-            processAttempt(paymentId, transactionId, amount, deadline, MAX_RETRIES)
-        }
-
-        select<Boolean> {
-
-            first.onAwait {
-                second.cancel()
-                it
+    private suspend fun processWithHedging(paymentId: UUID, transactionId: UUID, amount: Int, deadline: Long): Boolean =
+        coroutineScope {
+            val first = async { processAttempt(paymentId, transactionId, amount, deadline, MAX_RETRIES) }
+            val second = async {
+                delay(HEDGE_DELAY_MS)
+                processAttempt(paymentId, transactionId, amount, deadline, MAX_RETRIES)
             }
 
-            second.onAwait {
-                first.cancel()
-                it
+            select<Boolean> {
+                first.onAwait { second.cancel(); it }
+                second.onAwait { first.cancel(); it }
             }
         }
-    }
 
-    private suspend fun processSingle(
-        paymentId: UUID,
-        transactionId: UUID,
-        amount: Int,
-        deadline: Long
-    ): Boolean {
-        return processAttempt(paymentId, transactionId, amount, deadline, 1)
-    }
+    private suspend fun processSingle(paymentId: UUID, transactionId: UUID, amount: Int, deadline: Long): Boolean =
+        processAttempt(paymentId, transactionId, amount, deadline, 1)
 
-    private suspend fun processAttempt(
-        paymentId: UUID,
-        transactionId: UUID,
-        amount: Int,
-        deadline: Long,
-        retries: Int
-    ): Boolean {
-
+    private suspend fun processAttempt(paymentId: UUID, transactionId: UUID, amount: Int, deadline: Long, retries: Int): Boolean {
         repeat(retries) { retry ->
-
             if (now() > deadline) return false
 
             try {
                 semaphore.withPermit {
-
-                    if (!rateLimiter.tick()) {
-                        return false
-                    }
-
-                    val result = executeExternalCall(
-                        paymentId,
-                        transactionId,
-                        amount
-                    )
-
+                    if (!rateLimiter.tick()) return false
+                    val result = executeExternalCall(paymentId, transactionId, amount)
                     if (result) return true
                 }
-
             } catch (e: Exception) {
-
-                logger.warn(
-                    "[$accountName] attempt ${retry + 1} failed for txId: $transactionId",
-                    e
-                )
-
+                logger.warn("[$accountName] attempt ${retry + 1} failed for txId: $transactionId", e)
                 if (retry == retries - 1) return false
             }
         }
-
         return false
     }
 
-    private suspend fun executeExternalCall(
-        paymentId: UUID,
-        transactionId: UUID,
-        amount: Int
-    ): Boolean {
-
+    private suspend fun executeExternalCall(paymentId: UUID, transactionId: UUID, amount: Int): Boolean {
         val request = HttpRequest.newBuilder()
             .uri(
                 URI(
@@ -253,29 +232,27 @@ class PaymentExternalSystemAdapterImpl(
             .timeout(Duration.ofMillis(HTTP_TIMEOUT_MS))
             .build()
 
-        val response = client
-            .sendAsync(request, HttpResponse.BodyHandlers.ofString())
-            .await()
+        val response = client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).await()
+        val body = mapper.readValue(response.body(), ExternalSysResponse::class.java)
 
-        val body = mapper.readValue(
-            response.body(),
-            ExternalSysResponse::class.java
-        )
+        if (body.result) logger.info("[$accountName] Payment processed for txId: $transactionId")
+        return body.result
+    }
 
-        if (body.result) {
-            logger.info("[$accountName] Payment processed for txId: $transactionId")
-            return true
+    private fun logProcessing(paymentId: UUID, transactionId: UUID, result: Boolean) {
+        val processedAt = now()
+        dbScope.launch {
+            runCatching {
+                paymentESService.update(paymentId) {
+                    it.logProcessing(result, processedAt, transactionId)
+                }
+            }.onFailure { logger.error("Processing log failed", it) }
         }
-
-        return false
     }
 
     override fun price() = properties.price
-
     override fun isEnabled() = properties.enabled
-
     override fun name() = properties.accountName
-
 }
 
 fun now() = System.currentTimeMillis()
